@@ -63,7 +63,7 @@ DEFAULT_TRANSFER_MIN = 2.0       # 預設站與站之間人員搬送時間 (分�
 DEFAULT_TOP_N = 3                # 預設顯示 Top N 瓶頸站點數量 (可自由設定要顯示 Top 多少)
 
 SIM_DURATION = 4320              # 正式模擬時間長度 (可依天數或分鐘設定)
-WARMUP_DURATION = 1440           # 產線預熱時間：確保 Day 1, 00:00 啟動時全線皆有正常期初 WIP
+WARMUP_DURATION = 4320           # 產線預熱時間：確保 Day 1, 00:00 啟動時全線皆有正常期初 WIP
 MONITOR_INTERVAL = 15            # 狀態紀錄間隔 (分鐘)
 WIP_ALERT_THRESHOLD = 20         # WIP 紅色警示門檻：超過此數值時長條圖變成紅色
 X_AXIS_MAX = 30                  # 視覺化 X 軸固定上限：30 Lots
@@ -478,19 +478,36 @@ class ProductionLineSimulator:
     def monitor_process(self):
         """
         背景狀態紀錄程序 (Monitor)：
-        等待預熱完成後，在正式模擬期間內，每隔 MONITOR_INTERVAL 分鐘紀錄一次全線所有站點的當下 WIP。
+        等待預熱完成後，在正式模擬期間內，每隔 MONITOR_INTERVAL 分鐘紀錄一次全線所有站點的當下 WIP
+        以及「產線總 WIP = 站點 WIP (製程中 + 等待中) + 人員搬送 Lot」。
         """
         if self.warmup_duration > 0:
             yield self.env.timeout(self.warmup_duration)
 
         while True:
             sim_clock = round(self.env.now - self.warmup_duration, 2)
-            snapshot = {"time": sim_clock, "in_transfer": self.lots_in_transfer}
+            in_trans = int(self.lots_in_transfer)
+            snapshot = {"time": sim_clock, "in_transfer": in_trans}
+            station_wip_sum = 0
+            in_service_sum = 0
+            queue_sum = 0
+
             for st_name, res in self.resources.items():
                 queue_len = len(res.queue)
                 in_service = res.count
-                snapshot[st_name] = queue_len + in_service
+                st_wip = queue_len + in_service
+                snapshot[st_name] = st_wip
                 snapshot[f"{st_name}__queue"] = queue_len
+
+                station_wip_sum += st_wip
+                in_service_sum += in_service
+                queue_sum += queue_len
+
+            snapshot["total_station_wip"] = station_wip_sum
+            snapshot["total_in_service"] = in_service_sum
+            snapshot["total_queue"] = queue_sum
+            snapshot["total_line_wip"] = station_wip_sum + in_trans
+
             self.history_records.append(snapshot)
             yield self.env.timeout(self.monitor_interval)
 
@@ -532,9 +549,33 @@ class ProductionLineSimulator:
         history_df = pd.DataFrame(self.history_records)
         total_out = self.lots_completed["03SEC"] + self.lots_completed["01SG"]
         sim_days = self.sim_duration / 1440.0
+
+        avg_station_wip = float(history_df["total_station_wip"].mean())
+        avg_in_service = float(history_df["total_in_service"].mean())
+        avg_queue = float(history_df["total_queue"].mean())
+        avg_transfer = float(history_df["in_transfer"].mean())
+        avg_line_wip = float(history_df["total_line_wip"].mean())
+
+        end_row = history_df.iloc[-1]
+        end_station_wip = int(end_row["total_station_wip"])
+        end_in_service = int(end_row["total_in_service"])
+        end_queue = int(end_row["total_queue"])
+        end_transfer = int(end_row["in_transfer"])
+        end_line_wip = int(end_row["total_line_wip"])
+
         print(
             f"  • 模擬完成！{int(self.sim_duration)} 分鐘 ({sim_days:.1f} 天) 內全線完工總產出: {total_out} Lots "
             f"(03SEC: {self.lots_completed['03SEC']} Lots, 01SG: {self.lots_completed['01SG']} Lots)"
+        )
+        print(
+            f"  • 平均【產線總 WIP】    : {avg_line_wip:.2f} Lots "
+            f"= 站點 WIP {avg_station_wip:.2f} Lots (製程中: {avg_in_service:.2f} + 等待中: {avg_queue:.2f}) "
+            f"+ 人員搬送 {avg_transfer:.2f} Lots"
+        )
+        print(
+            f"  • 期末【產線總 WIP】    : {end_line_wip} Lots "
+            f"= 站點 WIP {end_station_wip} Lots (製程中: {end_in_service} + 等待中: {end_queue}) "
+            f"+ 人員搬送 {end_transfer} Lots"
         )
         print(f"  • 歷史紀錄快照筆數      : {len(history_df)} 筆")
         print("=" * 88 + "\n")
@@ -636,7 +677,7 @@ def create_and_show_animation(
     num_stations = len(station_names)
     daily_equip_mins = 60.0 * work_hours * (run_pct / 100.0)
 
-    fig, ax = plt.subplots(figsize=(15.2, 9.6), dpi=100)
+    fig, ax = plt.subplots(figsize=(15.4, 9.6), dpi=100)
     fig.patch.set_facecolor("#F8F9FA")
     ax.set_facecolor("#FFFFFF")
 
@@ -666,7 +707,7 @@ def create_and_show_animation(
     ax.set_xlim(0, X_AXIS_MAX)
     ax.set_xticks(np.arange(0, X_AXIS_MAX + 1, 5))
     ax.set_xlabel(
-        "站點當下 WIP 批數 (含排隊等待 Queue + 機台加工中 Lots)",
+        "站點當下 WIP 批數 (含製程中 In-Process + 等待中 Queue Lots)",
         fontsize=11,
         fontweight="bold",
         color="#1A202C",
@@ -704,18 +745,25 @@ def create_and_show_animation(
         y=0.96,
     )
     sub_title = ax.set_title(
-        f"當前模擬時間: Day 1, 00:00  |  全線站點 WIP: 0 Lots  |  在途搬送中: 0 Lots",
-        fontsize=11,
+        f"當前模擬時間: Day 1, 00:00  |  【產線總 WIP: 0 Lots】 = 站點 WIP: 0 (製程:0+等待:0) + 人員搬送: 0 Lots",
+        fontsize=10.5,
         fontweight="bold",
         color="#2C5282",
         pad=12,
     )
 
-    # 右下角顯示 Top N 瓶頸分析摘要盒
+    # 右下角顯示產線總 WIP 統計與 Top N 瓶頸分析摘要盒
+    avg_station_wip = float(history_df["total_station_wip"].mean())
+    avg_in_service = float(history_df["total_in_service"].mean())
+    avg_queue = float(history_df["total_queue"].mean())
+    avg_transfer = float(history_df["in_transfer"].mean())
+    avg_line_wip = float(history_df["total_line_wip"].mean())
+
     display_n = max(1, min(int(top_n), len(ranked_df)))
     box_display_n = min(display_n, 10)
     top_lines = [
-        f"【全線 Top {display_n} 瓶頸站點 (日投 {int(daily_lots)} Lots | 每日實際生產 {daily_equip_mins:.0f}m | 搬送 {transfer_min:.1f}m)】"
+        f"【全線平均產線總 WIP: {avg_line_wip:.1f} Lots = 站點 WIP {avg_station_wip:.1f} (製程:{avg_in_service:.1f}+等待:{avg_queue:.1f}) + 人員搬送 {avg_transfer:.1f} Lots】",
+        f"【全線 Top {display_n} 瓶頸站點 (日投 {int(daily_lots)} Lots | 每日實際生產 {daily_equip_mins:.0f}m | 搬送 {transfer_min:.1f}m)】",
     ]
     for idx in range(box_display_n):
         r = ranked_df.iloc[idx]
@@ -726,7 +774,7 @@ def create_and_show_animation(
     if display_n > box_display_n:
         top_lines.append(f"... (其餘 Top {box_display_n+1}~{display_n} 請見 Console 終端機輸出)")
 
-    box_fontsize = 8.5 if box_display_n <= 5 else 7.5
+    box_fontsize = 8.2 if box_display_n <= 5 else 7.4
     ax.text(
         0.985,
         0.025,
@@ -747,8 +795,10 @@ def create_and_show_animation(
         in_trans = int(row.get("in_transfer", 0))
         wips = row[station_names].values.astype(float)
         queues = row[queue_cols].values.astype(float)
-        total_wip = int(np.sum(wips))
+        total_station_wip = int(np.sum(wips))
         total_queue = int(np.sum(queues))
+        total_in_service = total_station_wip - total_queue
+        total_line_wip = total_station_wip + in_trans
         alert_count = int(np.sum(wips > WIP_ALERT_THRESHOLD))
 
         for bar, wip_val, q_val, txt in zip(bars, wips, queues, value_texts):
@@ -782,9 +832,9 @@ def create_and_show_animation(
 
         time_str = format_sim_time(current_time)
         sub_title.set_text(
-            f"當前模擬時間: {time_str} ({int(current_time)} min)  |  "
-            f"站點總 WIP: {total_wip} Lots (排隊: {total_queue})  |  "
-            f"人員搬送中: {in_trans} Lots  |  紅色超載站: {alert_count} 站"
+            f"模擬時間: {time_str} ({int(current_time)}m)  |  "
+            f"【產線總 WIP: {total_line_wip} Lots】 = 站點 WIP: {total_station_wip} (製程:{total_in_service}+等待:{total_queue}) "
+            f"+ 人員搬送: {in_trans} Lots  |  紅色超載站: {alert_count} 站"
         )
         sub_title.set_color(COLOR_WARNING if alert_count > 0 else "#2C5282")
 
