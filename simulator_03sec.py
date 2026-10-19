@@ -58,11 +58,12 @@ EXCEL_PATHS = [
 DEFAULT_DAILY_LOTS = 25          # 預設每日投入 Lot 總數 (實際生產建議範圍：10 ~ 30 Lots/天)
 DEFAULT_MIX_RATIO_STR = "7:3"    # 預設 03SEC 與 01SG 混線比例 (7:3 代表 70% 03SEC + 30% 01SG)
 DEFAULT_RUN_PCT = 80.0           # 預設機台 RUN% (80% 代表一天有 80% 時間可正常運作)
+DEFAULT_TOP_N = 3                # 預設顯示 Top N 瓶頸站點數量 (可自由設定要顯示 Top 多少)
 
-SIM_DURATION = 1440              # 正式模擬時間長度：1 天 (1440 分鐘)
+SIM_DURATION = 4320              # 正式模擬時間長度：1 天 (1440 分鐘)
 WARMUP_DURATION = 1440           # 產線預熱時間：1440 分鐘 (確保 Day 1, 00:00 啟動時全線皆有正常期初 WIP)
-MONITOR_INTERVAL = 5             # 狀態紀錄間隔：每隔 5 分鐘紀錄一次全線 WIP
-WIP_ALERT_THRESHOLD = 15         # WIP 紅色警示門檻：超過 15 Lots 時長條圖變成紅色
+MONITOR_INTERVAL = 15             # 狀態紀錄間隔：每隔 5 分鐘紀錄一次全線 WIP
+WIP_ALERT_THRESHOLD = 20         # WIP 紅色警示門檻：超過 15 Lots 時長條圖變成紅色
 X_AXIS_MAX = 30                  # 視覺化 X 軸固定上限：30 Lots
 RANDOM_SEED = 42                 # 固定隨機種子，確保簡報展示結果穩定可重現
 
@@ -489,13 +490,17 @@ class ProductionLineSimulator:
 
 
 # ==============================================================================
-# 4. 自動識別瓶頸分析模組 (Automated Bottleneck Analysis - 包含 D/B 完整計算)
+# 4. 自動識別瓶頸分析模組 (Automated Bottleneck Analysis - 支援自訂 Top N 顯示)
 # ==============================================================================
-def analyze_bottlenecks(stations_df: pd.DataFrame, history_df: pd.DataFrame) -> pd.DataFrame:
+def analyze_bottlenecks(
+    stations_df: pd.DataFrame,
+    history_df: pd.DataFrame,
+    top_n: int = DEFAULT_TOP_N,
+) -> pd.DataFrame:
     """
-    計算全線每一個站點（包含 02. D/B-IC D/B）在 1440 分鐘內的「平均 WIP (Average WIP)」，
-    嚴格依平均 WIP 由高至低排序，並在終端機印出：
-    === 全線 Top 3 瓶頸站點分析 ===
+    計算全線每一個站點（包含 02. D/B-IC D/B）在模擬期間內的「平均 WIP (Average WIP)」，
+    嚴格依平均 WIP 由高至低排序，並在終端機印出使用者指定數量的：
+    === 全線 Top N 瓶頸站點分析 ===
     """
     station_names = stations_df["station_name"].tolist()
     queue_cols = [f"{name}__queue" for name in station_names]
@@ -515,8 +520,9 @@ def analyze_bottlenecks(stations_df: pd.DataFrame, history_df: pd.DataFrame) -> 
         by=["avg_wip", "effective_ct"], ascending=[False, False]
     ).reset_index(drop=True)
 
-    print("=== 全線 Top 3 瓶頸站點分析 ===")
-    for idx in range(min(3, len(ranked_df))):
+    display_n = max(1, min(int(top_n), len(ranked_df)))
+    print(f"=== 全線 Top {display_n} 瓶頸站點分析 ===")
+    for idx in range(display_n):
         row = ranked_df.iloc[idx]
         print(
             f"{idx + 1}. {row['station_name']} - "
@@ -550,8 +556,8 @@ def format_sim_time(minutes: float) -> str:
     rem_mins = total_mins % 1440
     hours = rem_mins // 60
     mins = rem_mins % 60
-    if total_mins == 1440:
-        return "Day 1, 24:00"
+    if total_mins > 0 and rem_mins == 0:
+        return f"Day {total_mins // 1440}, 24:00"
     return f"Day {day}, {hours:02d}:{mins:02d}"
 
 
@@ -564,6 +570,7 @@ def create_and_show_animation(
     ratio_01sg: float,
     run_pct: float,
     interarrival_time: float,
+    top_n: int = DEFAULT_TOP_N,
 ):
     """
     利用歷史紀錄表與 matplotlib.animation.FuncAnimation 製作高階主管動態簡報圖表。
@@ -655,22 +662,29 @@ def create_and_show_animation(
         pad=12,
     )
 
-    # 右下角顯示 Top 3 瓶頸分析摘要盒
-    top3_lines = [
-        f"【全線 Top 3 瓶頸站點 (日投 {int(daily_lots)} Lots | 03SEC:01SG={ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | RUN%={run_pct:.0f}%)】"
+    # 右下角顯示 Top N 瓶頸分析摘要盒
+    display_n = max(1, min(int(top_n), len(ranked_df)))
+    # 為了防止使用者輸入過大的 N 導致圖表資訊盒超出畫面，圖表內最多展示前 10 名，完整清單印於終端機
+    box_display_n = min(display_n, 10)
+    top_lines = [
+        f"【全線 Top {display_n} 瓶頸站點 (日投 {int(daily_lots)} Lots | 03SEC:01SG={ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | RUN%={run_pct:.0f}%)】"
     ]
-    for idx in range(min(3, len(ranked_df))):
+    for idx in range(box_display_n):
         r = ranked_df.iloc[idx]
-        top3_lines.append(
+        top_lines.append(
             f"TOP {idx+1}: {r['station_name']} "
             f"(平均WIP: {r['avg_wip']:.2f} [排隊:{r['avg_queue']:.2f}] | 混線C/T: {r['ct']:.1f}m | {int(r['capacity'])}機)"
         )
+    if display_n > box_display_n:
+        top_lines.append(f"... (其餘 Top {box_display_n+1}~{display_n} 請見 Console 終端機輸出)")
+
+    box_fontsize = 8.5 if box_display_n <= 5 else 7.5
     ax.text(
         0.985,
         0.025,
-        "\n".join(top3_lines),
+        "\n".join(top_lines),
         transform=ax.transAxes,
-        fontsize=8.5,
+        fontsize=box_fontsize,
         verticalalignment="bottom",
         horizontalalignment="right",
         bbox=dict(boxstyle="round,pad=0.55", facecolor="#EDF2F7", edgecolor="#CBD5E0", alpha=0.94),
@@ -771,12 +785,13 @@ def parse_mix_ratio(mix_str: str) -> Tuple[float, float]:
     return 0.7, 0.3
 
 
-def get_simulation_parameters() -> Tuple[float, float, float, float]:
+def get_simulation_parameters() -> Tuple[float, float, float, float, int]:
     """
-    開放讓使用者透過命令列參數或互動式輸入設定三大核心參數：
+    開放讓使用者透過命令列參數或互動式輸入設定四大核心參數：
     1. 每日投入 Lot 數量 (--lots，預設 25，建議 10~30)
     2. 03SEC 與 01SG 混合比例 (--mix，預設 7:3)
     3. 機台 RUN% 稼動率 (--run-pct，預設 80%)
+    4. 顯示 Top N 瓶頸站點數量 (--top-n，預設 3)
     """
     parser = argparse.ArgumentParser(description="03SEC & 01SG 全線多站點動態混線模擬器")
     parser.add_argument(
@@ -797,11 +812,18 @@ def get_simulation_parameters() -> Tuple[float, float, float, float]:
         default=None,
         help=f"設定機台 RUN%% 正常運作時間百分比 (1~100，預設: {DEFAULT_RUN_PCT}%%)",
     )
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=None,
+        help=f"設定要顯示的 Top N 瓶頸站點數量 (預設: {DEFAULT_TOP_N})",
+    )
     args, _ = parser.parse_known_args()
 
     daily_lots = args.lots
     mix_str = args.mix
     run_pct = args.run_pct
+    top_n = args.top_n
 
     is_interactive = (os.environ.get("HEADLESS_TEST", "0") != "1") and sys.stdin.isatty()
 
@@ -832,20 +854,29 @@ def get_simulation_parameters() -> Tuple[float, float, float, float]:
             except Exception:
                 run_pct = float(DEFAULT_RUN_PCT)
 
+        if top_n is None:
+            try:
+                inp = input(f"  4. 請輸入要顯示的 Top N 瓶頸站點數量 (如 3, 5, 10) [預設 {DEFAULT_TOP_N}]: ").strip()
+                top_n = int(inp) if inp != "" else int(DEFAULT_TOP_N)
+            except Exception:
+                top_n = int(DEFAULT_TOP_N)
+
     if daily_lots is None or daily_lots <= 0:
         daily_lots = float(DEFAULT_DAILY_LOTS)
     if mix_str is None or mix_str.strip() == "":
         mix_str = DEFAULT_MIX_RATIO_STR
     if run_pct is None or run_pct <= 0 or run_pct > 100:
         run_pct = float(DEFAULT_RUN_PCT)
+    if top_n is None or top_n <= 0:
+        top_n = int(DEFAULT_TOP_N)
 
     ratio_03sec, ratio_01sg = parse_mix_ratio(mix_str)
-    return daily_lots, ratio_03sec, ratio_01sg, run_pct
+    return daily_lots, ratio_03sec, ratio_01sg, run_pct, top_n
 
 
 def main():
-    # Step 1: 取得使用者設定的三大模擬參數 (每日 Lot 數、03SEC:01SG 比例、機台 RUN%)
-    daily_lots, ratio_03sec, ratio_01sg, run_pct = get_simulation_parameters()
+    # Step 1: 取得使用者設定的四大模擬參數 (每日 Lot 數、03SEC:01SG 比例、機台 RUN%、Top N 瓶頸數)
+    daily_lots, ratio_03sec, ratio_01sg, run_pct, top_n = get_simulation_parameters()
 
     # Step 2: 讀取 03SEC 與 01SG 雙產品 Excel 工藝流程並計算混線加權 C/T 與 RUN% 折算產能
     stations_df, routings = load_process_data(
@@ -895,8 +926,8 @@ def main():
     )
     history_df = simulator.run()
 
-    # Step 4: 自動識別並印出全線 Top 3 瓶頸站點分析 (完整包含 D/B 計算)
-    ranked_df = analyze_bottlenecks(stations_df, history_df)
+    # Step 4: 自動識別並印出全線 Top N 瓶頸站點分析 (完整包含 D/B 計算)
+    ranked_df = analyze_bottlenecks(stations_df, history_df, top_n=top_n)
 
     # Step 5: 啟動 Matplotlib 橫向長條圖動態視覺化
     if os.environ.get("HEADLESS_TEST", "0") != "1":
@@ -909,6 +940,7 @@ def main():
             ratio_01sg=ratio_01sg,
             run_pct=run_pct,
             interarrival_time=simulator.interarrival_time,
+            top_n=top_n,
         )
 
 
