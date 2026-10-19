@@ -55,19 +55,21 @@ EXCEL_PATHS = [
     "SourceData.xlsx",
 ]
 
-DEFAULT_DAILY_LOTS = 25          # 預設每日投入 Lot 總數 (實際生產建議範圍：10 ~ 30 Lots/天)
+DEFAULT_SIM_MODE = "dynamic"     # 預設模擬模式："dynamic" (動態模擬：播放動畫+總結圖+分析圖) 或 "static" (靜態模擬：直接產生總結圖+分析圖)
+DEFAULT_DAILY_LOTS = 23          # 預設每日投入 Lot 總數 (實際生產建議範圍：10 ~ 30 Lots/天)
 DEFAULT_MIX_RATIO_STR = "7:3"    # 預設 03SEC 與 01SG 混線比例 (7:3 代表 70% 03SEC + 30% 01SG)
 DEFAULT_WORK_HOURS = 20.0        # 預設每天生產時間 (小時)，預設 20 小時 (即 60 * 20 = 1200 分鐘/天)
 DEFAULT_RUN_PCT = 80.0           # 預設機台 RUN% (預設 80%，故每天每台設備實際生產時間為 60 * 20 * 0.8 = 960 分鐘)
-DEFAULT_TRANSFER_MIN = 2.0       # 預設站與站之間人員搬送時間 (分鐘/次，設為 0 代表不計搬送時間)
+DEFAULT_TRANSFER_MIN = 5.0       # 預設站與站之間人員搬送時間 (分鐘/次，設為 0 代表不計搬送時間)
 DEFAULT_TOP_N = 3                # 預設顯示 Top N 瓶頸站點數量 (可自由設定要顯示 Top 多少)
 
 SIM_DURATION = 4320              # 正式模擬時間長度 (可依天數或分鐘設定)
-WARMUP_DURATION = 4320           # 產線預熱時間：確保 Day 1, 00:00 啟動時全線皆有正常期初 WIP
+WARMUP_DURATION = 10080          # 產線預熱時間：確保 Day 1, 00:00 啟動時全線皆有正常期初 WIP
 MONITOR_INTERVAL = 15            # 狀態紀錄間隔 (分鐘)
-WIP_ALERT_THRESHOLD = 20         # WIP 紅色警示門檻：超過此數值時長條圖變成紅色
+WIP_ALERT_THRESHOLD = 20         # WIP 紅色警示門檻：超過此數值時長條圖變成紅色，且分析圖在此處畫紅色虛線
 X_AXIS_MAX = 30                  # 視覺化 X 軸固定上限：30 Lots
 RANDOM_SEED = 42                 # 固定隨機種子，確保簡報展示結果穩定可重現
+OUTPUT_CHART_DIR = "output_charts"  # 自動儲存總結圖與 Top N 分析圖的資料夾路徑
 
 
 # ==============================================================================
@@ -583,52 +585,100 @@ class ProductionLineSimulator:
 
 
 # ==============================================================================
-# 4. 自動識別瓶頸分析模組 (Automated Bottleneck Analysis - 支援自訂 Top N 顯示)
+# 4. 自動識別瓶頸分析與最高峰統計模組 (Automated Bottleneck & Peak Analysis)
 # ==============================================================================
 def analyze_bottlenecks(
     stations_df: pd.DataFrame,
     history_df: pd.DataFrame,
     top_n: int = DEFAULT_TOP_N,
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    計算全線每一個站點（包含 02. D/B-IC D/B）在模擬期間內的「平均 WIP (Average WIP)」，
-    嚴格依平均 WIP 由高至低排序，並在終端機印出使用者指定數量的：
-    === 全線 Top N 瓶頸站點分析 ===
+    計算全線每一個站點在模擬期間內的：
+    1. 平均 WIP 排名 (ranked_avg_df)
+    2. WIP 最高峰排名 (ranked_peak_df)
+    以及產線總 WIP、站點 WIP、人員搬送 Lot 的【最高 / 最低 / 平均】統計。
     """
     station_names = stations_df["station_name"].tolist()
     queue_cols = [f"{name}__queue" for name in station_names]
 
     avg_wip_series = history_df[station_names].mean(axis=0)
     max_wip_series = history_df[station_names].max(axis=0)
+    min_wip_series = history_df[station_names].min(axis=0)
     avg_queue_series = history_df[queue_cols].mean(axis=0)
     avg_queue_series.index = station_names
+    max_queue_series = history_df[queue_cols].max(axis=0)
+    max_queue_series.index = station_names
+
+    # 找出各站點發生 WIP 最高峰的首次模擬時間點
+    peak_time_map = {}
+    for st in station_names:
+        peak_idx = history_df[st].idxmax()
+        peak_time_map[st] = float(history_df.loc[peak_idx, "time"])
 
     analysis_df = stations_df.copy()
     analysis_df["avg_wip"] = analysis_df["station_name"].map(avg_wip_series)
     analysis_df["avg_queue"] = analysis_df["station_name"].map(avg_queue_series)
     analysis_df["max_wip"] = analysis_df["station_name"].map(max_wip_series)
+    analysis_df["min_wip"] = analysis_df["station_name"].map(min_wip_series)
+    analysis_df["max_queue"] = analysis_df["station_name"].map(max_queue_series)
+    analysis_df["peak_time"] = analysis_df["station_name"].map(peak_time_map)
 
-    # 嚴格依照「平均 WIP (avg_wip)」由高至低排序（把 D/B 與全線所有站點一視同仁納入排名）
-    ranked_df = analysis_df.sort_values(
-        by=["avg_wip", "effective_ct"], ascending=[False, False]
+    # 1. 依「平均 WIP (avg_wip)」由高至低排序
+    ranked_avg_df = analysis_df.sort_values(
+        by=["avg_wip", "max_wip", "effective_ct"], ascending=[False, False, False]
     ).reset_index(drop=True)
 
-    display_n = max(1, min(int(top_n), len(ranked_df)))
-    print(f"=== 全線 Top {display_n} 瓶頸站點分析 ===")
+    # 2. 依「WIP 最高峰 (max_wip)」由高至低排序
+    ranked_peak_df = analysis_df.sort_values(
+        by=["max_wip", "avg_wip", "effective_ct"], ascending=[False, False, False]
+    ).reset_index(drop=True)
+
+    # 印出全線 WIP 與人員搬送 Lot 的【最高 / 最低 / 平均】總結統計
+    line_max = int(history_df["total_line_wip"].max())
+    line_min = int(history_df["total_line_wip"].min())
+    line_avg = float(history_df["total_line_wip"].mean())
+
+    st_max = int(history_df["total_station_wip"].max())
+    st_min = int(history_df["total_station_wip"].min())
+    st_avg = float(history_df["total_station_wip"].mean())
+
+    tr_max = int(history_df["in_transfer"].max())
+    tr_min = int(history_df["in_transfer"].min())
+    tr_avg = float(history_df["in_transfer"].mean())
+
+    print("=== 全線產線 WIP 與人員搬送 Lot 統計總結 (最高 / 最低 / 平均) ===")
+    print(f"  • 產線總 WIP (站點+搬送) : 最高 {line_max:3d} Lots  |  最低 {line_min:3d} Lots  |  平均 {line_avg:6.2f} Lots")
+    print(f"  • 站點總 WIP (製程+等待) : 最高 {st_max:3d} Lots  |  最低 {st_min:3d} Lots  |  平均 {st_avg:6.2f} Lots")
+    print(f"  • 人員搬送 Lot 數        : 最高 {tr_max:3d} Lots  |  最低 {tr_min:3d} Lots  |  平均 {tr_avg:6.2f} Lots")
+    print("=" * 80 + "\n")
+
+    display_n = max(1, min(int(top_n), len(ranked_avg_df)))
+    print(f"=== 全線【平均 WIP】Top {display_n} 瓶頸站點名單 ===")
     for idx in range(display_n):
-        row = ranked_df.iloc[idx]
+        row = ranked_avg_df.iloc[idx]
         print(
             f"{idx + 1}. {row['station_name']} - "
-            f"平均 WIP: {row['avg_wip']:.2f} (排隊: {row['avg_queue']:.2f}, 峰值 WIP: {int(row['max_wip'])}) - "
+            f"平均 WIP: {row['avg_wip']:.2f} (排隊: {row['avg_queue']:.2f}, 最高峰 WIP: {int(row['max_wip'])}) - "
             f"C/T: {row['ct']:.2f} min/lot (機台數: {int(row['capacity'])}, 每日上限: {row['daily_max_lots']:.1f} Lots/天)"
         )
     print("=" * 80 + "\n")
 
-    return ranked_df
+    print(f"=== 全線【WIP 最高峰 (Peak WIP)】Top {display_n} 站點名單 ===")
+    for idx in range(display_n):
+        row = ranked_peak_df.iloc[idx]
+        peak_t_str = format_sim_time(row["peak_time"])
+        print(
+            f"{idx + 1}. {row['station_name']} - "
+            f"最高峰 WIP: {int(row['max_wip'])} Lots (發生於 {peak_t_str}, 最大排隊: {int(row['max_queue'])}, 平均 WIP: {row['avg_wip']:.2f}) - "
+            f"每日上限: {row['daily_max_lots']:.1f} Lots/天"
+        )
+    print("=" * 80 + "\n")
+
+    return ranked_avg_df, ranked_peak_df
 
 
 # ==============================================================================
-# 5. 動態視覺化模組 (Dynamic Visualization with matplotlib.animation)
+# 5. 視覺化模組 (動態長條圖動畫 + 總結儀表板圖 + Top N 站點折線分析圖)
 # ==============================================================================
 def setup_chinese_font():
     """設定 Matplotlib 正體中文字型。"""
@@ -652,6 +702,304 @@ def format_sim_time(minutes: float) -> str:
     if total_mins > 0 and rem_mins == 0:
         return f"Day {total_mins // 1440}, 24:00"
     return f"Day {day}, {hours:02d}:{mins:02d}"
+
+
+def build_time_axis_ticks(times: np.ndarray) -> Tuple[List[float], List[str]]:
+    """為時間折線圖建立清晰的 X 軸時間刻度與標籤。"""
+    max_t = float(np.max(times)) if len(times) > 0 else 1440.0
+    if max_t <= 1440:
+        step = 240  # 每 4 小時一個刻度
+    elif max_t <= 4320:
+        step = 720  # 每 12 小時一個刻度
+    else:
+        step = 1440  # 每 24 小時一個刻度
+
+    tick_vals = list(np.arange(0, max_t + 1, step))
+    tick_labels = [f"{format_sim_time(t)}\n({int(t)}m)" for t in tick_vals]
+    return tick_vals, tick_labels
+
+
+def generate_summary_and_station_charts(
+    history_df: pd.DataFrame,
+    ranked_avg_df: pd.DataFrame,
+    ranked_peak_df: pd.DataFrame,
+    daily_lots: float,
+    ratio_03sec: float,
+    ratio_01sg: float,
+    work_hours: float,
+    run_pct: float,
+    transfer_min: float,
+    top_n: int = DEFAULT_TOP_N,
+    show_windows: bool = True,
+) -> List[str]:
+    """
+    產生並儲存：
+    1. 模擬總結圖 (Summary Dashboard)：
+       - 產線總 WIP、站點 WIP、人員搬送 Lot 的【最高 / 最低 / 平均】統計表與全期趨勢圖
+       - 【WIP 最高峰 Top N 名單】與【平均 WIP Top N 名單】橫向對照圖
+    2. Top N 站點個別折線分析圖 (一個站點一張圖)：
+       - Y 軸：WIP 數 (含該站總 WIP 實線與等待中 Queue 虛線)
+       - X 軸：模擬時間
+       - 紅色虛線：在警戒 WIP 數 (WIP_ALERT_THRESHOLD) 處畫出醒目紅色虛線
+    """
+    setup_chinese_font()
+    os.makedirs(OUTPUT_CHART_DIR, exist_ok=True)
+    saved_files: List[str] = []
+
+    times = history_df["time"].values.astype(float)
+    tick_vals, tick_labels = build_time_axis_ticks(times)
+    daily_equip_mins = 60.0 * work_hours * (run_pct / 100.0)
+    display_n = max(1, min(int(top_n), len(ranked_peak_df)))
+
+    # --------------------------------------------------------------------------
+    # 圖表 A：產線模擬總結圖 (Summary Dashboard)
+    # --------------------------------------------------------------------------
+    fig_sum = plt.figure(figsize=(15.5, 9.4), dpi=100)
+    fig_sum.patch.set_facecolor("#F8F9FA")
+    gs = fig_sum.add_gridspec(2, 2, height_ratios=[1.05, 1.15], width_ratios=[1.15, 1.0], hspace=0.34, wspace=0.25)
+
+    fig_sum.suptitle(
+        f"【03SEC & 01SG 產線模擬總結報告】日投: {int(daily_lots)} Lots | 混線 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
+        f"每日生產: 60×{work_hours:.0f}h×{run_pct:.0f}% = {daily_equip_mins:.0f}m | 跨站搬送: {transfer_min:.1f}m",
+        fontsize=14,
+        fontweight="bold",
+        color="#1A202C",
+        y=0.96,
+    )
+
+    # (A-1) 左上：全線產線總 WIP、站點 WIP 與人員搬送 Lot 時間趨勢圖
+    ax_trend = fig_sum.add_subplot(gs[0, 0])
+    ax_trend.set_facecolor("#FFFFFF")
+    ax_trend.plot(times, history_df["total_line_wip"], color="#1A365D", linewidth=2.2, label="產線總 WIP (站點+搬送)")
+    ax_trend.plot(times, history_df["total_station_wip"], color="#2B6CB0", linewidth=1.8, linestyle="--", label="站點總 WIP (製程+等待)")
+    ax_trend.plot(times, history_df["in_transfer"], color="#D69E2E", linewidth=1.6, label="人員搬送中 Lot 數")
+    ax_trend.fill_between(times, history_df["total_station_wip"], history_df["total_line_wip"], color="#FEFCBF", alpha=0.5)
+    ax_trend.set_title("全線產線總 WIP vs 站點 WIP vs 人員搬送 Lot 趨勢", fontsize=11.5, fontweight="bold", color="#2C5282")
+    ax_trend.set_ylabel("Lot 數量", fontsize=10, fontweight="bold")
+    ax_trend.set_xticks(tick_vals)
+    ax_trend.set_xticklabels(tick_labels, fontsize=8)
+    ax_trend.grid(True, linestyle=":", alpha=0.6)
+    ax_trend.legend(loc="upper left", fontsize=8.5, frameon=True)
+
+    # (A-2) 右上：產線 WIP 與人員搬送 Lot 的【最高 / 最低 / 平均】統計表格 + 最高峰 Top N 文字榜單
+    ax_table = fig_sum.add_subplot(gs[0, 1])
+    ax_table.axis("off")
+
+    line_max, line_min, line_avg = int(history_df["total_line_wip"].max()), int(history_df["total_line_wip"].min()), float(history_df["total_line_wip"].mean())
+    st_max, st_min, st_avg = int(history_df["total_station_wip"].max()), int(history_df["total_station_wip"].min()), float(history_df["total_station_wip"].mean())
+    srv_max, srv_min, srv_avg = int(history_df["total_in_service"].max()), int(history_df["total_in_service"].min()), float(history_df["total_in_service"].mean())
+    q_max, q_min, q_avg = int(history_df["total_queue"].max()), int(history_df["total_queue"].min()), float(history_df["total_queue"].mean())
+    tr_max, tr_min, tr_avg = int(history_df["in_transfer"].max()), int(history_df["in_transfer"].min()), float(history_df["in_transfer"].mean())
+
+    ax_table.set_title("產線 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)", fontsize=11.5, fontweight="bold", color="#2C5282")
+
+    table_data = [
+        ["產線總 WIP (站點+搬送)", f"{line_max} Lots", f"{line_min} Lots", f"{line_avg:.2f} Lots"],
+        ["站點總 WIP (製程+等待)", f"{st_max} Lots", f"{st_min} Lots", f"{st_avg:.2f} Lots"],
+        ["  ├─ 機台製程中 WIP", f"{srv_max} Lots", f"{srv_min} Lots", f"{srv_avg:.2f} Lots"],
+        ["  └─ 站點等待中 Queue", f"{q_max} Lots", f"{q_min} Lots", f"{q_avg:.2f} Lots"],
+        ["人員搬送中 Lot 數", f"{tr_max} Lots", f"{tr_min} Lots", f"{tr_avg:.2f} Lots"],
+    ]
+    col_labels = ["統計項目", "最高 (Max)", "最低 (Min)", "平均 (Avg)"]
+
+    tbl = ax_table.table(
+        cellText=table_data,
+        colLabels=col_labels,
+        loc="center",
+        cellLoc="center",
+        bbox=[0.0, 0.12, 1.0, 0.78],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(9.5)
+    for (r_idx, c_idx), cell in tbl.get_celld().items():
+        cell.set_edgecolor("#CBD5E0")
+        if r_idx == 0:
+            cell.set_facecolor("#2B6CB0")
+            cell.get_text().set_color("#FFFFFF")
+            cell.get_text().set_fontweight("bold")
+        elif r_idx == 1:
+            cell.set_facecolor("#EBF8FF")
+            cell.get_text().set_fontweight("bold")
+        elif r_idx == 5:
+            cell.set_facecolor("#FEFCBF")
+            cell.get_text().set_fontweight("bold")
+        else:
+            cell.set_facecolor("#FFFFFF")
+
+    # (A-3) 左下：【WIP 最高峰 (Peak WIP)】Top N 站點排行圖
+    ax_peak = fig_sum.add_subplot(gs[1, 0])
+    ax_peak.set_facecolor("#FFFFFF")
+    sub_peak = ranked_peak_df.iloc[:display_n].copy()
+    y_p = np.arange(len(sub_peak))
+    peak_vals = sub_peak["max_wip"].values.astype(float)
+    peak_colors = ["#E53E3E" if v >= WIP_ALERT_THRESHOLD else "#DD6B20" for v in peak_vals]
+
+    ax_peak.barh(y_p, peak_vals, height=0.6, color=peak_colors, edgecolor="#742A2A", alpha=0.9)
+    ax_peak.axvline(WIP_ALERT_THRESHOLD, color="#E53E3E", linestyle="--", linewidth=1.5, label=f"警戒線 ({WIP_ALERT_THRESHOLD} Lots)")
+    ax_peak.set_yticks(y_p)
+    ax_peak.set_yticklabels([f"Top {i+1}: {n}" for i, n in enumerate(sub_peak["station_name"])], fontsize=9, fontweight="bold")
+    ax_peak.invert_yaxis()
+    ax_peak.set_xlim(0, max(X_AXIS_MAX, float(np.max(peak_vals)) + 5))
+    ax_peak.set_xlabel("最高峰 WIP 數 (Peak Lots)", fontsize=9.5, fontweight="bold")
+    ax_peak.set_title(f"【WIP 最高峰 (Peak WIP)】Top {display_n} 站點名單", fontsize=11.5, fontweight="bold", color="#9B2C2C")
+    ax_peak.grid(axis="x", linestyle=":", alpha=0.6)
+    for i, (val, avg_v, p_t) in enumerate(zip(peak_vals, sub_peak["avg_wip"], sub_peak["peak_time"])):
+        ax_peak.text(val + 0.3, i, f"峰值: {int(val)} Lots (平均: {avg_v:.1f} | {format_sim_time(p_t)})", va="center", fontsize=8.5, fontweight="bold", color="#1A202C")
+    ax_peak.legend(loc="lower right", fontsize=8.5)
+
+    # (A-4) 右下：【平均 WIP (Average WIP)】Top N 瓶頸站點排行圖
+    ax_avg = fig_sum.add_subplot(gs[1, 1])
+    ax_avg.set_facecolor("#FFFFFF")
+    sub_avg = ranked_avg_df.iloc[:display_n].copy()
+    y_a = np.arange(len(sub_avg))
+    avg_vals = sub_avg["avg_wip"].values.astype(float)
+    avg_colors = ["#E53E3E" if v >= WIP_ALERT_THRESHOLD else "#2B6CB0" for v in avg_vals]
+
+    ax_avg.barh(y_a, avg_vals, height=0.6, color=avg_colors, edgecolor="#1A365D", alpha=0.9)
+    ax_avg.axvline(WIP_ALERT_THRESHOLD, color="#E53E3E", linestyle="--", linewidth=1.5, label=f"警戒線 ({WIP_ALERT_THRESHOLD} Lots)")
+    ax_avg.set_yticks(y_a)
+    ax_avg.set_yticklabels([f"Top {i+1}: {n}" for i, n in enumerate(sub_avg["station_name"])], fontsize=9, fontweight="bold")
+    ax_avg.invert_yaxis()
+    ax_avg.set_xlim(0, max(X_AXIS_MAX, float(np.max(avg_vals)) + 5))
+    ax_avg.set_xlabel("平均 WIP 數 (Average Lots)", fontsize=9.5, fontweight="bold")
+    ax_avg.set_title(f"【平均 WIP (Average WIP)】Top {display_n} 瓶頸站點名單", fontsize=11.5, fontweight="bold", color="#2C5282")
+    ax_avg.grid(axis="x", linestyle=":", alpha=0.6)
+    for i, (val, q_v, cap_l) in enumerate(zip(avg_vals, sub_avg["avg_queue"], sub_avg["daily_max_lots"])):
+        ax_avg.text(val + 0.3, i, f"平均: {val:.2f} (排隊: {q_v:.2f} | 日上限: {cap_l:.1f})", va="center", fontsize=8.5, fontweight="bold", color="#1A202C")
+    ax_avg.legend(loc="lower right", fontsize=8.5)
+
+    summary_path = os.path.join(OUTPUT_CHART_DIR, "00_Summary_Dashboard.png")
+    fig_sum.savefig(summary_path, dpi=130, bbox_inches="tight")
+    saved_files.append(summary_path)
+
+    # --------------------------------------------------------------------------
+    # 圖表 B：Top N 瓶頸站點個別折線分析圖 (一個站點一張圖)
+    # --------------------------------------------------------------------------
+    # 針對 WIP 最高峰 Top N (或綜合瓶頸 Top N) 生成獨立折線圖
+    # 我們以 ranked_peak_df 前 display_n 名生成單站分析圖（包含最高峰與平均統計資訊）
+    max_popup_figs = 10  # 避免使用者設 Top 30 時一次彈出 30 個視窗卡住系統
+
+    for idx in range(display_n):
+        row = ranked_peak_df.iloc[idx]
+        st_name = row["station_name"]
+        q_col = f"{st_name}__queue"
+
+        st_wips = history_df[st_name].values.astype(float)
+        st_queues = history_df[q_col].values.astype(float)
+        max_w = int(row["max_wip"])
+        min_w = int(row["min_wip"])
+        avg_w = float(row["avg_wip"])
+        avg_q = float(row["avg_queue"])
+        peak_t = float(row["peak_time"])
+
+        fig_st, ax_st = plt.subplots(figsize=(11.5, 6.2), dpi=100)
+        fig_st.patch.set_facecolor("#F8F9FA")
+        ax_st.set_facecolor("#FFFFFF")
+
+        # 繪製該站總 WIP (製程中+等待中) 折線與等待中 Queue 折線
+        ax_st.plot(
+            times,
+            st_wips,
+            color="#2B6CB0",
+            linewidth=2.3,
+            label=f"站點總 WIP (製程+等待) [最高: {max_w}, 最低: {min_w}, 平均: {avg_w:.2f}]",
+        )
+        ax_st.plot(
+            times,
+            st_queues,
+            color="#DD6B20",
+            linewidth=1.5,
+            linestyle=":",
+            label=f"等待中 Queue WIP [平均排隊: {avg_q:.2f} Lots]",
+        )
+
+        # 在警戒 WIP 數 (WIP_ALERT_THRESHOLD) 的地方畫一條醒目的紅色虛線
+        ax_st.axhline(
+            y=WIP_ALERT_THRESHOLD,
+            color="#E53E3E",
+            linestyle="--",
+            linewidth=2.0,
+            label=f"警戒 WIP 紅色虛線 ({WIP_ALERT_THRESHOLD} Lots)",
+        )
+
+        # 若有超過警戒線的區段，填上淡紅色警示區域
+        ax_st.fill_between(
+            times,
+            WIP_ALERT_THRESHOLD,
+            st_wips,
+            where=(st_wips >= WIP_ALERT_THRESHOLD),
+            color="#FEB2B2",
+            alpha=0.45,
+            interpolate=True,
+            label="超載警戒區 (WIP ≥ 警戒線)",
+        )
+        ax_st.fill_between(times, 0, st_wips, color="#BEE3F8", alpha=0.25)
+
+        # 標註最高峰點位
+        ax_st.scatter([peak_t], [max_w], color="#E53E3E", s=70, zorder=5)
+        ax_st.annotate(
+            f"最高峰 WIP: {max_w} Lots\n({format_sim_time(peak_t)})",
+            xy=(peak_t, max_w),
+            xytext=(peak_t, max_w + max(2.0, max_w * 0.08)),
+            ha="center",
+            fontsize=9.5,
+            fontweight="bold",
+            color="#9B2C2C",
+            arrowprops=dict(arrowstyle="->", color="#E53E3E", lw=1.2),
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFF5F5", edgecolor="#FEB2B2"),
+        )
+
+        y_upper = max(X_AXIS_MAX, WIP_ALERT_THRESHOLD + 6, max_w + 5)
+        ax_st.set_ylim(0, y_upper)
+        ax_st.set_xlim(0, float(np.max(times)))
+        ax_st.set_xticks(tick_vals)
+        ax_st.set_xticklabels(tick_labels, fontsize=9)
+
+        ax_st.set_xlabel("模擬時間 (Time)", fontsize=11, fontweight="bold", color="#1A202C", labelpad=8)
+        ax_st.set_ylabel("WIP 數量 (Lots)", fontsize=11, fontweight="bold", color="#1A202C", labelpad=8)
+        ax_st.set_title(
+            f"【Top {idx+1} 瓶頸站點 WIP 趨勢分析圖】{st_name}\n"
+            f"(機台數: {int(row['capacity'])} 台 | 混線加權 C/T: {row['ct']:.1f}m | 每日最大產能: {row['daily_max_lots']:.1f} Lots/天 | "
+            f"最高 WIP: {max_w} / 最低: {min_w} / 平均: {avg_w:.2f})",
+            fontsize=12,
+            fontweight="bold",
+            color="#1A202C",
+            pad=12,
+        )
+
+        ax_st.grid(True, linestyle=":", alpha=0.65, color="#A0AEC0")
+        ax_st.spines["top"].set_visible(False)
+        ax_st.spines["right"].set_visible(False)
+        ax_st.legend(loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E0", fontsize=9.5)
+
+        safe_name = (
+            st_name.replace("/", "_")
+            .replace("\\", "_")
+            .replace(" ", "_")
+            .replace(":", "")
+            .replace(".", "")
+        )
+        chart_path = os.path.join(OUTPUT_CHART_DIR, f"{idx+1:02d}_Top{idx+1}_{safe_name}.png")
+        fig_st.savefig(chart_path, dpi=130, bbox_inches="tight")
+        saved_files.append(chart_path)
+
+        # 若超過視窗彈出上限則關閉 Figure，僅保留檔案與前 10 張視窗
+        if not show_windows or idx >= max_popup_figs:
+            plt.close(fig_st)
+
+    if not show_windows:
+        plt.close(fig_sum)
+
+    print(f"📊 [圖表產生完成] 已自動生成 1 張總結圖與 {display_n} 張單站折線分析圖，並儲存至 '{OUTPUT_CHART_DIR}/' 資料夾：")
+    for fpath in saved_files:
+        print(f"   • {fpath}")
+    print()
+
+    if show_windows:
+        print("[視覺化啟動] 正在開啟【總結圖】與【Top N 瓶頸站點分析折線圖】視窗...")
+        plt.show()
+
+    return saved_files
 
 
 def create_and_show_animation(
@@ -737,7 +1085,7 @@ def create_and_show_animation(
     ]
 
     fig.suptitle(
-        f"【03SEC & 01SG 混線模擬】日投: {int(daily_lots)} Lots | 比例 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
+        f"【03SEC & 01SG 動態模擬】日投: {int(daily_lots)} Lots | 比例 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
         f"每日生產: 60×{work_hours:.0f}h×{run_pct:.0f}% = {daily_equip_mins:.0f} min/天 | 跨站搬送: {transfer_min:.1f}m",
         fontsize=13,
         fontweight="bold",
@@ -752,7 +1100,6 @@ def create_and_show_animation(
         pad=12,
     )
 
-    # 右下角顯示產線總 WIP 統計與 Top N 瓶頸分析摘要盒
     avg_station_wip = float(history_df["total_station_wip"].mean())
     avg_in_service = float(history_df["total_in_service"].mean())
     avg_queue = float(history_df["total_queue"].mean())
@@ -763,13 +1110,13 @@ def create_and_show_animation(
     box_display_n = min(display_n, 10)
     top_lines = [
         f"【全線平均產線總 WIP: {avg_line_wip:.1f} Lots = 站點 WIP {avg_station_wip:.1f} (製程:{avg_in_service:.1f}+等待:{avg_queue:.1f}) + 人員搬送 {avg_transfer:.1f} Lots】",
-        f"【全線 Top {display_n} 瓶頸站點 (日投 {int(daily_lots)} Lots | 每日實際生產 {daily_equip_mins:.0f}m | 搬送 {transfer_min:.1f}m)】",
+        f"【全線 Top {display_n} 瓶頸站點 (關閉此動畫視窗後將自動顯示總結圖與單站分析折線圖)】",
     ]
     for idx in range(box_display_n):
         r = ranked_df.iloc[idx]
         top_lines.append(
             f"TOP {idx+1}: {r['station_name']} "
-            f"(平均WIP: {r['avg_wip']:.2f} [排隊:{r['avg_queue']:.2f}] | 日產能上限: {r['daily_max_lots']:.1f} Lots)"
+            f"(平均WIP: {r['avg_wip']:.2f} [最高峰:{int(r['max_wip'])}] | 日產能上限: {r['daily_max_lots']:.1f} Lots)"
         )
     if display_n > box_display_n:
         top_lines.append(f"... (其餘 Top {box_display_n+1}~{display_n} 請見 Console 終端機輸出)")
@@ -850,7 +1197,7 @@ def create_and_show_animation(
     )
     fig._animation_ref = ani
 
-    print("[視覺化啟動] 正在開啟 Matplotlib 動態視覺化視窗 (關閉視窗即可結束程式)...")
+    print("[動態模擬啟動] 正在開啟 Matplotlib 動態長條圖視窗 (關閉此視窗後，將自動顯示總結圖與各站折線分析圖)...")
     plt.show()
     return ani
 
@@ -883,17 +1230,34 @@ def parse_mix_ratio(mix_str: str) -> Tuple[float, float]:
     return 0.7, 0.3
 
 
-def get_simulation_parameters() -> Tuple[float, float, float, float, float, float, int]:
+def parse_sim_mode(mode_str: Optional[str]) -> str:
+    """解析模擬模式開關 ('dynamic' 或 'static')。"""
+    if mode_str is None:
+        return DEFAULT_SIM_MODE
+    s = str(mode_str).strip().lower()
+    if s in ("2", "static", "s", "靜態", "靜態模擬"):
+        return "static"
+    return "dynamic"
+
+
+def get_simulation_parameters() -> Tuple[str, float, float, float, float, float, float, int]:
     """
-    開放讓使用者透過命令列參數或互動式輸入設定六大核心參數：
-    1. 每日投入 Lot 數量 (--lots，預設 25，建議 10~30)
+    開放讓使用者透過命令列參數或互動式輸入設定七大核心參數：
+    0. 模擬模式開關 (--mode，'dynamic' 動態模擬 或 'static' 靜態模擬，預設 dynamic)
+    1. 每日投入 Lot 數量 (--lots，預設 23，建議 10~30)
     2. 03SEC 與 01SG 混合比例 (--mix，預設 7:3)
     3. 每天生產時間 (小時) (--work-hours，預設 20 小時)
     4. 機台 RUN% 稼動率 (--run-pct，預設 80%，故每天實際生產時間 = 60 * 20 * 0.8 = 960 分鐘)
-    5. 站與站之間人員搬送時間 (分鐘) (--transfer-min，預設 2.0 分鐘，0 代表不計)
+    5. 站與站之間人員搬送時間 (分鐘) (--transfer-min，預設 5.0 分鐘，0 代表不計)
     6. 顯示 Top N 瓶頸站點數量 (--top-n，預設 3)
     """
-    parser = argparse.ArgumentParser(description="03SEC & 01SG 全線多站點動態混線模擬器")
+    parser = argparse.ArgumentParser(description="03SEC & 01SG 全線多站點動態/靜態混線模擬器")
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        help="設定模擬模式：'dynamic' (1: 動態模擬) 或 'static' (2: 靜態模擬)",
+    )
     parser.add_argument(
         "--lots",
         type=float,
@@ -932,6 +1296,7 @@ def get_simulation_parameters() -> Tuple[float, float, float, float, float, floa
     )
     args, _ = parser.parse_known_args()
 
+    mode_raw = args.mode
     daily_lots = args.lots
     mix_str = args.mix
     work_hours = args.work_hours
@@ -942,9 +1307,16 @@ def get_simulation_parameters() -> Tuple[float, float, float, float, float, floa
     is_interactive = (os.environ.get("HEADLESS_TEST", "0") != "1") and sys.stdin.isatty()
 
     if is_interactive:
-        print("\n" + "=" * 78)
+        print("\n" + "=" * 80)
         print("⚙️  【模擬參數設定】(直接按 Enter 可快速套用預設值)")
-        print("=" * 78)
+        print("=" * 80)
+
+        if mode_raw is None:
+            default_mode_label = "1: 動態模擬" if DEFAULT_SIM_MODE == "dynamic" else "2: 靜態模擬"
+            inp = input(
+                f"  0. 請選擇模擬模式 (1: 動態模擬[動畫+總結+分析圖], 2: 靜態模擬[直接出總結+分析圖]) [預設 {default_mode_label}]: "
+            ).strip()
+            mode_raw = inp if inp != "" else DEFAULT_SIM_MODE
 
         if daily_lots is None:
             try:
@@ -994,6 +1366,7 @@ def get_simulation_parameters() -> Tuple[float, float, float, float, float, floa
             except Exception:
                 top_n = int(DEFAULT_TOP_N)
 
+    sim_mode = parse_sim_mode(mode_raw)
     if daily_lots is None or daily_lots <= 0:
         daily_lots = float(DEFAULT_DAILY_LOTS)
     if mix_str is None or mix_str.strip() == "":
@@ -1008,12 +1381,14 @@ def get_simulation_parameters() -> Tuple[float, float, float, float, float, floa
         top_n = int(DEFAULT_TOP_N)
 
     ratio_03sec, ratio_01sg = parse_mix_ratio(mix_str)
-    return daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n
+    return sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n
 
 
 def main():
-    # Step 1: 取得使用者設定的模擬參數
-    daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = get_simulation_parameters()
+    # Step 1: 取得使用者設定的模擬參數 (含動態/靜態模擬開關)
+    sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
+        get_simulation_parameters()
+    )
     daily_equip_mins = 60.0 * work_hours * (run_pct / 100.0)
 
     # Step 2: 讀取 03SEC 與 01SG 雙產品 Excel 工藝流程並計算混線加權 C/T 與每日實際產能
@@ -1026,7 +1401,8 @@ def main():
 
     print(
         f"\n【03SEC ({ratio_03sec*100:.0f}%) & 01SG ({ratio_01sg*100:.0f}%) 全線站點負荷總覽 "
-        f"(每日設備實際生產時間 = 60×{work_hours:.0f}×{run_pct/100:.2f} = {daily_equip_mins:.0f} 分鐘/台)】"
+        f"(模式: {'動態模擬' if sim_mode == 'dynamic' else '靜態模擬'} | "
+        f"每日設備實際生產時間 = 60×{work_hours:.0f}×{run_pct/100:.2f} = {daily_equip_mins:.0f} 分鐘/台)】"
     )
     preview_df = stations_df[
         [
@@ -1046,7 +1422,7 @@ def main():
         "03SEC累計C/T",
         "01SG累計C/T",
         "混線加權C/T",
-        f"每日最大產能(Lots/天)",
+        "每日最大產能(Lots/天)",
     ]
     print(preview_df.to_string(index=False))
     print()
@@ -1067,15 +1443,18 @@ def main():
     )
     history_df = simulator.run()
 
-    # Step 4: 自動識別並印出全線 Top N 瓶頸站點分析
-    ranked_df = analyze_bottlenecks(stations_df, history_df, top_n=top_n)
+    # Step 4: 自動識別並印出全線 WIP 最高/最低/平均總結、平均 WIP Top N 與最高峰 WIP Top N 名單
+    ranked_avg_df, ranked_peak_df = analyze_bottlenecks(stations_df, history_df, top_n=top_n)
 
-    # Step 5: 啟動 Matplotlib 橫向長條圖動態視覺化
-    if os.environ.get("HEADLESS_TEST", "0") != "1":
+    is_headless = os.environ.get("HEADLESS_TEST", "0") == "1"
+
+    # Step 5: 根據「動態模擬 (dynamic)」或「靜態模擬 (static)」開關執行視覺化
+    if sim_mode == "dynamic" and not is_headless:
+        # 5A. 動態模擬：先播放全線多站點橫向長條圖動態動畫
         create_and_show_animation(
             stations_df=stations_df,
             history_df=history_df,
-            ranked_df=ranked_df,
+            ranked_df=ranked_avg_df,
             daily_lots=daily_lots,
             ratio_03sec=ratio_03sec,
             ratio_01sg=ratio_01sg,
@@ -1085,6 +1464,22 @@ def main():
             interarrival_time=simulator.interarrival_time,
             top_n=top_n,
         )
+
+    # 5B. 產生「模擬總結圖」與「Top N 瓶頸站點折線分析圖 (一個一張 + 警戒紅虛線)」
+    # (無論動態模擬結束後或靜態模擬，皆會自動生成圖檔並彈出圖表視窗)
+    generate_summary_and_station_charts(
+        history_df=history_df,
+        ranked_avg_df=ranked_avg_df,
+        ranked_peak_df=ranked_peak_df,
+        daily_lots=daily_lots,
+        ratio_03sec=ratio_03sec,
+        ratio_01sg=ratio_01sg,
+        work_hours=work_hours,
+        run_pct=run_pct,
+        transfer_min=transfer_min,
+        top_n=top_n,
+        show_windows=(not is_headless),
+    )
 
 
 if __name__ == "__main__":
