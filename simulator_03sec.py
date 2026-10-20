@@ -1572,102 +1572,170 @@ def get_simulation_parameters() -> Tuple[str, float, float, float, float, float,
     return sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n
 
 
+def reload_config_globals():
+    """重新讀取 config.ini 並刷新全域預設值，支援即時修改即時套用。"""
+    global DEFAULT_SIM_MODE, DEFAULT_DAILY_LOTS, DEFAULT_MIX_RATIO_STR, DEFAULT_WORK_HOURS
+    global DEFAULT_RUN_PCT, DEFAULT_TRANSFER_MIN, DEFAULT_TOP_N, SIM_DURATION, WARMUP_DURATION
+    global MONITOR_INTERVAL, WIP_ALERT_THRESHOLD
+
+    cfg = load_or_create_config(CONFIG_PATH)
+    sim_sec = cfg["SIMULATION"] if "SIMULATION" in cfg else {}
+
+    DEFAULT_SIM_MODE = sim_sec.get("sim_mode", "static").strip().lower()
+    DEFAULT_DAILY_LOTS = float(sim_sec.get("daily_lots", 29.0))
+    DEFAULT_MIX_RATIO_STR = sim_sec.get("mix_ratio", "7:3").strip()
+    DEFAULT_WORK_HOURS = float(sim_sec.get("work_hours", 20.0))
+    DEFAULT_RUN_PCT = float(sim_sec.get("run_pct", 83.0))
+    DEFAULT_TRANSFER_MIN = float(sim_sec.get("transfer_min", 8.0))
+    DEFAULT_TOP_N = int(sim_sec.get("top_n", 3))
+
+    SIM_DURATION = float(sim_sec.get("sim_duration", 10080.0))
+    WARMUP_DURATION = float(sim_sec.get("warmup_duration", 10080.0))
+    MONITOR_INTERVAL = float(sim_sec.get("monitor_interval", 15.0))
+    WIP_ALERT_THRESHOLD = int(float(sim_sec.get("alert_threshold", 20)))
+
+
 def main():
-    # Step 1: 取得使用者設定的模擬參數 (含動態/靜態模擬開關)
-    sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
-        get_simulation_parameters()
-    )
-    daily_equip_mins = 60.0 * work_hours * (run_pct / 100.0)
-
-    # Step 2: 讀取 03SEC 與 01SG 雙產品 Excel 工藝流程並計算混線加權 C/T 與每日實際產能
-    stations_df, routings = load_process_data(
-        ratio_03sec=ratio_03sec,
-        ratio_01sg=ratio_01sg,
-        run_pct=run_pct,
-        work_hours=work_hours,
-    )
-
-    print(
-        f"\n【03SEC ({ratio_03sec*100:.0f}%) & 01SG ({ratio_01sg*100:.0f}%) 全線站點負荷總覽 "
-        f"(模式: {'動態模擬' if sim_mode == 'dynamic' else '靜態模擬'} | "
-        f"每日設備實際生產時間 = 60×{work_hours:.0f}×{run_pct/100:.2f} = {daily_equip_mins:.0f} 分鐘/台)】"
-    )
-    preview_df = stations_df[
-        [
-            "station_id",
-            "station_name",
-            "capacity",
-            "ct_03sec",
-            "ct_01sg",
-            "ct",
-            "daily_max_lots",
-        ]
-    ].copy()
-    preview_df.columns = [
-        "序號",
-        "站點名稱",
-        "機台數",
-        "03SEC累計C/T",
-        "01SG累計C/T",
-        "混線加權C/T",
-        "每日最大產能(Lots/天)",
-    ]
-    print(preview_df.to_string(index=False))
-    print()
-
-    # Step 3: 啟動 SimPy 雙產品混線模擬器
-    simulator = ProductionLineSimulator(
-        stations_df=stations_df,
-        routings=routings,
-        daily_lots=daily_lots,
-        ratio_03sec=ratio_03sec,
-        ratio_01sg=ratio_01sg,
-        work_hours=work_hours,
-        run_pct=run_pct,
-        transfer_min=transfer_min,
-        sim_duration=SIM_DURATION,
-        warmup_duration=WARMUP_DURATION,
-        monitor_interval=MONITOR_INTERVAL,
-    )
-    history_df = simulator.run()
-
-    # Step 4: 自動識別並印出全線 WIP 最高/最低/平均總結、等待中LOT數最高峰 Top N 與站點總WIP最高峰 Top N 名單
-    ranked_queue_peak_df, ranked_peak_df = analyze_bottlenecks(stations_df, history_df, top_n=top_n)
-
+    round_count = 1
     is_headless = os.environ.get("HEADLESS_TEST", "0") == "1"
+    last_params = None
 
-    # Step 5: 根據「動態模擬 (dynamic)」或「靜態模擬 (static)」開關執行視覺化
-    if sim_mode == "dynamic" and not is_headless:
-        # 5A. 動態模擬：先播放全線多站點橫向長條圖動態動畫
-        create_and_show_animation(
+    while True:
+        # 每輪開始前重新載入 config.ini，確保外部修改隨時生效
+        reload_config_globals()
+
+        # Step 1: 取得使用者設定的模擬參數 (含動態/靜態模擬開關)
+        if last_params is not None and not is_headless:
+            # 延續上一輪的選項選擇
+            use_same = False
+            print("\n" + "=" * 88)
+            print(f"🔄 【第 {round_count} 輪模擬準備】請選擇參數設定方式：")
+            print("   [1] 重新輸入 / 確認參數 (可調整數值或讀取最新 config.ini / Excel)")
+            print("   [2] 使用上一輪相同參數直接快速執行")
+            print("   [0] 結束並退出程式")
+            print("=" * 88)
+            try:
+                choice = input("請選擇操作 [預設 1]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n[系統提示] 已收到退出中斷信號，程式結束。")
+                break
+
+            if choice in ("0", "exit", "quit", "q"):
+                print("\n[系統提示] 感謝使用，程式已安全結束。")
+                break
+            elif choice == "2":
+                use_same = True
+
+            if use_same:
+                sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = last_params
+            else:
+                sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
+                    get_simulation_parameters()
+                )
+        else:
+            sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
+                get_simulation_parameters()
+            )
+
+        last_params = (sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n)
+        daily_equip_mins = 60.0 * work_hours * (run_pct / 100.0)
+
+        # Step 2: 讀取 03SEC 與 01SG 雙產品 Excel 工藝流程並計算混線加權 C/T 與每日實際產能
+        stations_df, routings = load_process_data(
+            ratio_03sec=ratio_03sec,
+            ratio_01sg=ratio_01sg,
+            run_pct=run_pct,
+            work_hours=work_hours,
+        )
+
+        print(
+            f"\n【03SEC ({ratio_03sec*100:.0f}%) & 01SG ({ratio_01sg*100:.0f}%) 全線站點負荷總覽 "
+            f"(模式: {'動態模擬' if sim_mode == 'dynamic' else '靜態模擬'} | "
+            f"每日設備實際生產時間 = 60×{work_hours:.0f}×{run_pct/100:.2f} = {daily_equip_mins:.0f} 分鐘/台)】"
+        )
+        preview_df = stations_df[
+            [
+                "station_id",
+                "station_name",
+                "capacity",
+                "ct_03sec",
+                "ct_01sg",
+                "ct",
+                "daily_max_lots",
+            ]
+        ].copy()
+        preview_df.columns = [
+            "序號",
+            "站點名稱",
+            "機台數",
+            "03SEC累計C/T",
+            "01SG累計C/T",
+            "混線加權C/T",
+            "每日最大產能(Lots/天)",
+        ]
+        print(preview_df.to_string(index=False))
+        print()
+
+        # Step 3: 啟動 SimPy 雙產品混線模擬器
+        simulator = ProductionLineSimulator(
             stations_df=stations_df,
-            history_df=history_df,
-            ranked_df=ranked_queue_peak_df,
+            routings=routings,
             daily_lots=daily_lots,
             ratio_03sec=ratio_03sec,
             ratio_01sg=ratio_01sg,
             work_hours=work_hours,
             run_pct=run_pct,
             transfer_min=transfer_min,
-            interarrival_time=simulator.interarrival_time,
+            sim_duration=SIM_DURATION,
+            warmup_duration=WARMUP_DURATION,
+            monitor_interval=MONITOR_INTERVAL,
+        )
+        history_df = simulator.run()
+
+        # Step 4: 自動識別並印出全線 WIP 最高/最低/平均總結、等待中LOT數最高峰 Top N 與站點總WIP最高峰 Top N 名單
+        ranked_queue_peak_df, ranked_peak_df = analyze_bottlenecks(stations_df, history_df, top_n=top_n)
+
+        # Step 5: 根據「動態模擬 (dynamic)」或「靜態模擬 (static)」開關執行視覺化
+        if sim_mode == "dynamic" and not is_headless:
+            # 5A. 動態模擬：先播放全線多站點橫向長條圖動態動畫
+            create_and_show_animation(
+                stations_df=stations_df,
+                history_df=history_df,
+                ranked_df=ranked_queue_peak_df,
+                daily_lots=daily_lots,
+                ratio_03sec=ratio_03sec,
+                ratio_01sg=ratio_01sg,
+                work_hours=work_hours,
+                run_pct=run_pct,
+                transfer_min=transfer_min,
+                interarrival_time=simulator.interarrival_time,
+                top_n=top_n,
+            )
+
+        # 5B. 產生「模擬總結圖」與「Top N 瓶頸站點折線分析圖 (一個一張 + 警戒紅虛線)」
+        # (無論動態模擬結束後或靜態模擬，皆會自動生成圖檔並彈出圖表視窗)
+        generate_summary_and_station_charts(
+            history_df=history_df,
+            ranked_queue_peak_df=ranked_queue_peak_df,
+            ranked_peak_df=ranked_peak_df,
+            daily_lots=daily_lots,
+            ratio_03sec=ratio_03sec,
+            ratio_01sg=ratio_01sg,
+            work_hours=work_hours,
+            run_pct=run_pct,
+            transfer_min=transfer_min,
             top_n=top_n,
+            show_windows=(not is_headless),
         )
 
-    # 5B. 產生「模擬總結圖」與「Top N 瓶頸站點折線分析圖 (一個一張 + 警戒紅虛線)」
-    # (無論動態模擬結束後或靜態模擬，皆會自動生成圖檔並彈出圖表視窗)
-    generate_summary_and_station_charts(
-        history_df=history_df,
-        ranked_queue_peak_df=ranked_queue_peak_df,
-        ranked_peak_df=ranked_peak_df,
-        daily_lots=daily_lots,
-        ratio_03sec=ratio_03sec,
-        ratio_01sg=ratio_01sg,
-        work_hours=work_hours,
-        run_pct=run_pct,
-        transfer_min=transfer_min,
-        top_n=top_n,
-        show_windows=(not is_headless),
-    )
+        # 徹底釋放圖表記憶體資源
+        plt.close("all")
+
+        # 若在非互動式環境（如自動化驗證），單次跑完即結束
+        if is_headless or not sys.stdin.isatty():
+            break
+
+        round_count += 1
 
 
 if __name__ == "__main__":
