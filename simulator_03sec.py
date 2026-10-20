@@ -75,74 +75,94 @@ OUTPUT_CHART_DIR = "output_charts"  # 自動儲存總結圖與 Top N 分析圖�
 # ==============================================================================
 # 2. 載板廠設備群組對照與雙產品資料讀取模組 (pandas Data Processing)
 # ==============================================================================
-# 根據『黃光CT總表』、『設備加工上限』、『03SEC CT (2+2)』與『01SG CT (1+1)』定義全線核心站點與機台數量 (Capacity)
-EQUIPMENT_STATION_MAP = {
-    "UPPA010": ("L/F貼耐熱膠帶 (TE0109/人工)", 2),
-    "TE0109":  ("L/F貼耐熱膠帶 (TE0109/人工)", 2),
-    "SM0053":  ("D/B-IC D/B (Die Bond)", 5),
-    "TS0145":  ("Nikon半自動尺寸/首件量測 (TS0145)", 2),
-    "CL0200":  ("ABF/SM 表面粗化 (CL0200)", 1),
-    "OV0036":  ("粗化/酸洗烘烤 (OV0036)", 1),
-    "LF0003":  ("ABF film 壓膜/壓合 (LF0003)", 1),
-    "OV0750":  ("Oven 烘箱群-Cure/軟硬烤 (OV0750~1238)", 7),
-    "UPRM001": ("ABF-film 撕耐熱膠帶 (人工)", 2),
-    "DR0026":  ("LASER 雷射打孔 (DR0026/09)", 2),
-    "DL0017":  ("CF4 Plasma 去膠渣 (DL0017)", 2),
-    "CL0201":  ("水平酸洗線 (CL0201)", 1),
-    "DL0027":  ("馗鼎 O2 Plasma (DL0027/26)", 2),
-    "ET0023":  ("Cu 銅蝕刻線 (ET0023)", 1),
-    "VC1548":  ("AOI 外觀自動光學檢查 (VC1548)", 1),
-    "UPQC":    ("QC 品質檢驗站 (QC-1/2/3)", 3),
-    "OV1239":  ("RDL 酸洗烘烤 (OV1239/40)", 2),
-    "SP0043":  ("Sputter 濺鍍著膜 (SP0043/04)", 2),
-    "LF0014":  ("RDL 乾膜壓合 (LF0014)", 1),
-    "曝光新機": ("RDL 線路曝光 (曝光新機)", 1),
-    "OV0038":  ("RDL 曝後烤/顯後烤 (OV0038)", 1),
-    "DE0025":  ("RDL 乾膜顯影 (DE0025)", 1),
-    "PL0084":  ("龍門雙面電鍍 Cu (PL0084)", 1),
-    "ST0012":  ("RDL 水平去膜 (ST0012)", 1),
-    "ET0026":  ("NiCr 蝕刻線 (ET0026)", 1),
-    "PR0254":  ("Via/SM 樹脂綠漆印刷 (PR0254+舊機改機)", 2),
-    "舊機改機": ("Via/SM 樹脂綠漆印刷 (PR0254+舊機改機)", 2),
-    "EX0044":  ("Via/SM 防焊對位曝光 (EX0044)", 1),
-    "DE0005":  ("Via/SM 綠漆顯影 (DE0005)", 1),
-    "DL0010":  ("SM 防焊層 O2 Plasma (DL0010)", 1),
-    "EX0028":  ("Via/SM 全面曝光 (EX0028)", 1),
-    "TS0014":  ("SM/Cu 人工金相尺寸量測 (TS0014)", 1),
-    "PL0088":  ("雙面電鍍 NiAu (PL0088)", 1),
-    "XR0008":  ("X-Ray NiAu 厚度量測 (XR0008)", 1),
-    "UPSC069": ("Q3 扣帳數量比對 (人工)", 2),
+# 站點標準顯示名稱對照字典（機台數量 Capacity 不在此寫死，改由 Excel 可用機台欄位動態判定）
+EQUIPMENT_NAME_MAP = {
+    "UPPA010": "L/F貼耐熱膠帶 (TE0109/人工)",
+    "TE0109":  "L/F貼耐熱膠帶 (TE0109/人工)",
+    "SM0053":  "D/B-IC D/B (Die Bond)",
+    "TS0145":  "Nikon半自動尺寸/首件量測 (TS0145)",
+    "CL0200":  "ABF/SM 表面粗化 (CL0200)",
+    "OV0036":  "粗化/酸洗烘烤 (OV0036)",
+    "LF0003":  "ABF film 壓膜/壓合 (LF0003)",
+    "OV0750":  "Oven 烘箱群-Cure/軟硬烤 (OV0750~1238)",
+    "UPRM001": "ABF-film 撕耐熱膠帶 (人工)",
+    "DR0026":  "LASER 雷射打孔 (DR0026/09)",
+    "DL0017":  "CF4 Plasma 去膠渣 (DL0017)",
+    "CL0201":  "水平酸洗線 (CL0201)",
+    "DL0027":  "馗鼎 O2 Plasma (DL0027/26)",
+    "ET0023":  "Cu 銅蝕刻線 (ET0023)",
+    "VC1548":  "AOI 外觀自動光學檢查 (VC1548)",
+    "UPQC":    "QC 品質檢驗站 (QC-1/2/3)",
+    "OV1239":  "RDL 酸洗烘烤 (OV1239/40)",
+    "SP0043":  "Sputter 濺鍍著膜 (SP0043/04)",
+    "LF0014":  "RDL 乾膜壓合 (LF0014)",
+    "曝光新機": "RDL 線路曝光 (曝光新機)",
+    "OV0038":  "RDL 曝後烤/顯後烤 (OV0038)",
+    "DE0025":  "RDL 乾膜顯影 (DE0025)",
+    "PL0084":  "龍門雙面電鍍 Cu (PL0084)",
+    "ST0012":  "RDL 水平去膜 (ST0012)",
+    "ET0026":  "NiCr 蝕刻線 (ET0026)",
+    "PR0254":  "Via/SM 樹脂綠漆印刷 (PR0254)",
+    "EX0044":  "Via/SM 防焊對位曝光 (EX0044)",
+    "DE0005":  "Via/SM 綠漆顯影 (DE0005)",
+    "DL0010":  "SM 防焊層 O2 Plasma (DL0010)",
+    "EX0028":  "Via/SM 全面曝光 (EX0028)",
+    "TS0014":  "SM/Cu 人工金相尺寸量測 (TS0014)",
+    "PL0088":  "雙面電鍍 NiAu (PL0088)",
+    "XR0008":  "X-Ray NiAu 厚度量測 (XR0008)",
+    "UPSC069": "Q3 扣帳數量比對 (人工)",
+}
+
+# 人工作業站點標準配置人數 (非機台)
+MANUAL_STATION_CAPACITY = {
+    "UPQC": 3,     # QC-1, QC-2, QC-3 三班/三站
+    "UPPA010": 2,  # 貼耐熱膠帶作業人數
+    "UPRM001": 2,  # 撕耐熱膠帶作業人數
+    "UPSC069": 2,  # 扣帳比對作業人數
+    "TE0109": 2,   # 貼膠機作業人數
 }
 
 
-def resolve_station_group(proc_code: str, proc_name: str, equip_list: List[str]) -> Tuple[str, int]:
+def resolve_station_group(proc_code: str, proc_name: str, equip_list: List[str]) -> Tuple[str, int, List[str]]:
     """
-    將『03SEC CT (2+2)』與『01SG CT (1+1)』中的每一道工序對應至真實的物理設備站點與機台數量 (Capacity)。
-    若機台數量空白或未定義，則穩健預設為 1。
+    將工藝流程中的工序對應至真實的物理站點與可用設備清單，並依 Excel 可用機台欄位動態判定機台數量 (Capacity)。
     """
     primary_eq = equip_list[0] if len(equip_list) > 0 else ""
 
-    # 1. 特殊製程編號或人工站點精準歸類
+    # 1. 決定標準站點名稱
     if proc_code.startswith("UPQC"):
-        return EQUIPMENT_STATION_MAP["UPQC"]
-    if proc_code in ("UPPA010", "UPPA008"):
-        return EQUIPMENT_STATION_MAP["UPPA010"]
-    if proc_code == "UPRM001":
-        return EQUIPMENT_STATION_MAP["UPRM001"]
-    if proc_code == "UPSC069":
-        return EQUIPMENT_STATION_MAP["UPSC069"]
-    if proc_code == "UPEX032":
-        return EQUIPMENT_STATION_MAP["EX0044"]
+        st_name = EQUIPMENT_NAME_MAP["UPQC"]
+    elif proc_code in ("UPPA010", "UPPA008"):
+        st_name = EQUIPMENT_NAME_MAP["UPPA010"]
+    elif proc_code == "UPRM001":
+        st_name = EQUIPMENT_NAME_MAP["UPRM001"]
+    elif proc_code == "UPSC069":
+        st_name = EQUIPMENT_NAME_MAP["UPSC069"]
+    elif proc_code == "UPEX032":
+        st_name = EQUIPMENT_NAME_MAP["EX0044"]
+    elif primary_eq in EQUIPMENT_NAME_MAP:
+        st_name = EQUIPMENT_NAME_MAP[primary_eq]
+    else:
+        st_name = f"{proc_name} ({primary_eq if primary_eq else '預設單機'})"
 
-    # 2. 根據首選可用機台代碼對應核心設備站點
-    if primary_eq in EQUIPMENT_STATION_MAP:
-        return EQUIPMENT_STATION_MAP[primary_eq]
+    # 2. 統計真實有效機台清單 (只要出現在可用機台內就算可生產設備)
+    valid_machines = [eq for eq in equip_list if eq and eq not in ("-", "機台自動", "無效站點")]
+    non_manual_machines = [eq for eq in valid_machines if eq != "人工"]
 
-    # 3. 若某站點機台數量空白或不在預設字典中，統計有效機台數，空白則預設為 1
-    valid_machines = [eq for eq in equip_list if eq not in ("", "-", "人工", "機台自動", "無效站點")]
-    cap = len(valid_machines) if len(valid_machines) > 0 else 1
-    fallback_name = f"{proc_name} ({primary_eq if primary_eq else '預設單機'})"
-    return fallback_name, max(1, cap)
+    # 3. 動態判定機台數量 (Capacity)
+    if len(non_manual_machines) > 0:
+        # 有填寫具體設備 (例如 PR0254, 舊機改機, OV0750~1238, SM0053~新機等)
+        cap = len(non_manual_machines)
+    elif proc_code.startswith("UPQC"):
+        cap = MANUAL_STATION_CAPACITY["UPQC"]
+    elif proc_code in MANUAL_STATION_CAPACITY:
+        cap = MANUAL_STATION_CAPACITY[proc_code]
+    elif primary_eq in MANUAL_STATION_CAPACITY:
+        cap = MANUAL_STATION_CAPACITY[primary_eq]
+    else:
+        cap = max(1, len(valid_machines))
+
+    return st_name, max(1, cap), non_manual_machines
 
 
 def parse_product_routing_sheet(xl: pd.ExcelFile, sheet_name: str, product_code: str) -> pd.DataFrame:
@@ -177,7 +197,7 @@ def parse_product_routing_sheet(xl: pd.ExcelFile, sheet_name: str, product_code:
             if pd.notna(val) and str(val).strip() != "":
                 equip_list.append(str(val).strip())
 
-        station_key, capacity = resolve_station_group(proc_code, proc_name, equip_list)
+        station_key, capacity, valid_eqs = resolve_station_group(proc_code, proc_name, equip_list)
 
         routing_steps.append({
             "product": product_code,
@@ -186,6 +206,7 @@ def parse_product_routing_sheet(xl: pd.ExcelFile, sheet_name: str, product_code:
             "proc_name": proc_name,
             "station_key": station_key,
             "capacity": max(1, int(capacity)),
+            "valid_eqs": valid_eqs,
             "ct": round(ct, 4),
         })
 
@@ -203,14 +224,27 @@ def build_combined_station_summary(
     """
     根據 03SEC 與 01SG 的工藝路線、混合比例 (例如 7:3)、每天生產時間 (例如 20 小時) 以及機台 RUN% (例如 80%)，
     建立全線各站點的彙整資料表：
+    - 依據 Excel 中該站點出現之相異設備集合，動態聚合計算真實設備數量 (Capacity)
     - 每天設備實際可生產時間 = 60 * work_hours * (run_pct / 100.0) (預設 60 * 20 * 0.8 = 960 分鐘/天/台)
     - 折算至 24 小時日曆模擬時間軸的綜合可用率因子 = (work_hours / 24.0) * (run_pct / 100.0)
     - 計算該站點「每日最大產能批數 (daily_cap_lots = (daily_equip_prod_mins * capacity) / weighted_ct)」
     """
+    all_routings = pd.concat([routing_03sec, routing_01sg], ignore_index=True)
     station_order = []
-    for st_key in pd.concat([routing_03sec["station_key"], routing_01sg["station_key"]]):
+    for st_key in all_routings["station_key"]:
         if st_key not in station_order:
             station_order.append(st_key)
+
+    # 聚合每個站點在所有工序中出現過的所有相異有效設備，動態計算站點總容量 (Capacity)
+    station_capacity_map: Dict[str, int] = {}
+    for st_key, grp in all_routings.groupby("station_key"):
+        all_unique_eqs = set()
+        for eqs in grp["valid_eqs"]:
+            all_unique_eqs.update(eqs)
+        if len(all_unique_eqs) > 0:
+            station_capacity_map[st_key] = max(1, len(all_unique_eqs))
+        else:
+            station_capacity_map[st_key] = max(1, int(grp["capacity"].max()))
 
     run_rate = max(0.05, min(1.0, run_pct / 100.0))
     work_hours_clamped = max(1.0, min(24.0, float(work_hours)))
@@ -225,8 +259,7 @@ def build_combined_station_summary(
         sub_03 = routing_03sec[routing_03sec["station_key"] == st_key]
         sub_01 = routing_01sg[routing_01sg["station_key"] == st_key]
 
-        cap = int(sub_03["capacity"].iloc[0]) if not sub_03.empty else int(sub_01["capacity"].iloc[0])
-        cap = max(1, cap)
+        cap = station_capacity_map.get(st_key, 1)
 
         pass_03 = len(sub_03)
         pass_01 = len(sub_01)
