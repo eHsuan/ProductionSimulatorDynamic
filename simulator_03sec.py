@@ -57,7 +57,7 @@ EXCEL_PATHS = [
 ]
 
 DEFAULT_SIM_MODE = "dynamic"     # 預設模擬模式："dynamic" (動態模擬：播放動畫+總結圖+分析圖) 或 "static" (靜態模擬：直接產生總結圖+分析圖)
-DEFAULT_DAILY_LOTS = 22          # 預設每日投入 Lot 總數 (實際生產建議範圍：10 ~ 30 Lots/天)
+DEFAULT_DAILY_LOTS = 24          # 預設每日投入 Lot 總數 (實際生產建議範圍：10 ~ 30 Lots/天)
 DEFAULT_MIX_RATIO_STR = "7:3"    # 預設 03SEC 與 01SG 混線比例 (7:3 代表 70% 03SEC + 30% 01SG)
 DEFAULT_WORK_HOURS = 20.0        # 預設每天生產時間 (小時)，預設 20 小時 (即 60 * 20 = 1200 分鐘/天)
 DEFAULT_RUN_PCT = 80.0           # 預設機台 RUN% (預設 80%，故每天每台設備實際生產時間為 60 * 20 * 0.8 = 960 分鐘)
@@ -658,9 +658,9 @@ def analyze_bottlenecks(
     analysis_df["max_queue"] = analysis_df["station_name"].map(max_queue_series)
     analysis_df["peak_time"] = analysis_df["station_name"].map(peak_time_map)
 
-    # 1. 依「平均 WIP (avg_wip)」由高至低排序
+    # 1. 依「平均等待中 Queue (avg_queue)」由高至低排序 (瓶頸阻塞名單)
     ranked_avg_df = analysis_df.sort_values(
-        by=["avg_wip", "max_wip", "effective_ct"], ascending=[False, False, False]
+        by=["avg_queue", "avg_wip", "max_queue"], ascending=[False, False, False]
     ).reset_index(drop=True)
 
     # 2. 依「WIP 最高峰 (max_wip)」由高至低排序
@@ -688,12 +688,12 @@ def analyze_bottlenecks(
     print("=" * 80 + "\n")
 
     display_n = max(1, min(int(top_n), len(ranked_avg_df)))
-    print(f"=== 全線【平均 WIP】Top {display_n} 瓶頸站點名單 ===")
+    print(f"=== 全線【平均等待中 Queue (WIP)】Top {display_n} 瓶頸站點名單 ===")
     for idx in range(display_n):
         row = ranked_avg_df.iloc[idx]
         print(
             f"{idx + 1}. {row['station_name']} - "
-            f"平均 WIP: {row['avg_wip']:.2f} (排隊: {row['avg_queue']:.2f}, 最高峰 WIP: {int(row['max_wip'])}) - "
+            f"平均排隊: {row['avg_queue']:.2f} Lots (站點總WIP: {row['avg_wip']:.2f}, 最高排隊: {int(row['max_queue'])}) - "
             f"C/T: {row['ct']:.2f} min/lot (機台數: {int(row['capacity'])}, 每日上限: {row['daily_max_lots']:.1f} Lots/天)"
         )
     print("=" * 80 + "\n")
@@ -922,30 +922,30 @@ def generate_summary_and_station_charts(
         )
     ax_peak.legend(loc="lower right", fontsize=8.5, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
 
-    # (A-4) 右下：【平均 WIP (Average WIP)】Top N 瓶頸站點排行圖
+    # (A-4) 右下：【平均等待中 Queue (Average Queue)】Top N 瓶頸站點排行圖
     ax_avg = fig_sum.add_subplot(gs_bot[0, 1])
     ax_avg.set_facecolor("#FFFFFF")
     sub_avg = ranked_avg_df.iloc[:display_n].copy()
     y_a = np.arange(len(sub_avg))
-    avg_vals = sub_avg["avg_wip"].values.astype(float)
-    avg_colors = ["#E53E3E" if v >= WIP_ALERT_THRESHOLD else "#2B6CB0" for v in avg_vals]
+    avg_queue_vals = sub_avg["avg_queue"].values.astype(float)
+    avg_colors = ["#E53E3E" if v >= WIP_ALERT_THRESHOLD else "#2B6CB0" for v in avg_queue_vals]
 
-    ax_avg.barh(y_a, avg_vals, height=0.58, color=avg_colors, edgecolor="#1A365D", alpha=0.9)
+    ax_avg.barh(y_a, avg_queue_vals, height=0.58, color=avg_colors, edgecolor="#1A365D", alpha=0.9)
     ax_avg.axvline(WIP_ALERT_THRESHOLD, color="#E53E3E", linestyle="--", linewidth=1.5, label=f"警戒線 ({WIP_ALERT_THRESHOLD} Lots)")
     ax_avg.set_yticks(y_a)
     ax_avg.set_yticklabels([f"Top {i+1}: {n}" for i, n in enumerate(sub_avg["station_name"])], fontsize=9, fontweight="bold")
     ax_avg.invert_yaxis()
-    max_a_val = float(np.max(avg_vals)) if len(avg_vals) > 0 else 10.0
-    x_limit_avg = max(X_AXIS_MAX * 1.35, WIP_ALERT_THRESHOLD * 1.45, max_a_val * 1.65 + 4.0)
+    max_q_val = float(np.max(avg_queue_vals)) if len(avg_queue_vals) > 0 else 10.0
+    x_limit_avg = max(X_AXIS_MAX * 1.35, WIP_ALERT_THRESHOLD * 1.45, max_q_val * 1.65 + 4.0)
     ax_avg.set_xlim(0, x_limit_avg)
-    ax_avg.set_xlabel("平均 WIP 數 (Average Lots)", fontsize=9.5, fontweight="bold")
-    ax_avg.set_title(f"【平均 WIP (Average WIP)】Top {display_n} 瓶頸站點名單", fontsize=11.5, fontweight="bold", color="#2C5282", pad=10)
+    ax_avg.set_xlabel("平均等待中數量 (Average Queue Lots)", fontsize=9.5, fontweight="bold")
+    ax_avg.set_title(f"【平均等待中 Queue (Average Queue)】Top {display_n} 瓶頸站點名單", fontsize=11.5, fontweight="bold", color="#2C5282", pad=10)
     ax_avg.grid(axis="x", linestyle=":", alpha=0.6)
-    for i, (val, q_v, cap_l) in enumerate(zip(avg_vals, sub_avg["avg_queue"], sub_avg["daily_max_lots"])):
+    for i, (q_val, max_q, cap_l) in enumerate(zip(avg_queue_vals, sub_avg["max_queue"], sub_avg["daily_max_lots"])):
         ax_avg.text(
-            val + x_limit_avg * 0.015,
+            q_val + x_limit_avg * 0.015,
             i,
-            f"平均: {val:.2f} (排隊: {q_v:.2f} | 日上限: {cap_l:.1f})",
+            f"排隊: {q_val:.2f} (最高排隊: {int(max_q)} | 日上限: {cap_l:.1f})",
             va="center",
             ha="left",
             fontsize=8.5,
