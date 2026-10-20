@@ -21,6 +21,7 @@
 """
 
 import argparse
+from datetime import datetime
 import math
 import os
 import random
@@ -783,7 +784,9 @@ def generate_summary_and_station_charts(
        - 紅色虛線：在警戒 WIP 數 (WIP_ALERT_THRESHOLD) 處畫出醒目紅色虛線
     """
     setup_chinese_font()
-    os.makedirs(OUTPUT_CHART_DIR, exist_ok=True)
+    run_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    run_output_dir = os.path.join(OUTPUT_CHART_DIR, run_timestamp)
+    os.makedirs(run_output_dir, exist_ok=True)
     saved_files: List[str] = []
 
     times = history_df["time"].values.astype(float)
@@ -952,7 +955,7 @@ def generate_summary_and_station_charts(
         )
     ax_avg.legend(loc="lower right", fontsize=8.5, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
 
-    summary_path = os.path.join(OUTPUT_CHART_DIR, "00_Summary_Dashboard.png")
+    summary_path = os.path.join(run_output_dir, "00_Summary_Dashboard.png")
     fig_sum.savefig(summary_path, dpi=130, bbox_inches="tight", pad_inches=0.25)
     saved_files.append(summary_path)
 
@@ -1074,7 +1077,7 @@ def generate_summary_and_station_charts(
             .replace(":", "")
             .replace(".", "")
         )
-        chart_path = os.path.join(OUTPUT_CHART_DIR, f"{idx+1:02d}_Top{idx+1}_{safe_name}.png")
+        chart_path = os.path.join(run_output_dir, f"{idx+1:02d}_Top{idx+1}_{safe_name}.png")
         fig_st.savefig(chart_path, dpi=130, bbox_inches="tight", pad_inches=0.2)
         saved_files.append(chart_path)
 
@@ -1085,7 +1088,7 @@ def generate_summary_and_station_charts(
     if not show_windows:
         plt.close(fig_sum)
 
-    print(f"📊 [圖表產生完成] 已自動生成 1 張總結圖與 {display_n} 張單站折線分析圖，並儲存至 '{OUTPUT_CHART_DIR}/' 資料夾：")
+    print(f"📊 [圖表產生完成] 已自動生成 1 張總結圖與 {display_n} 張單站折線分析圖，並儲存至 '{run_output_dir}/' 資料夾：")
     for fpath in saved_files:
         print(f"   • {fpath}")
     print()
