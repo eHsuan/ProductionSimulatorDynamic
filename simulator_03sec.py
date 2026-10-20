@@ -644,11 +644,16 @@ def analyze_bottlenecks(
     max_queue_series = history_df[queue_cols].max(axis=0)
     max_queue_series.index = station_names
 
-    # 找出各站點發生 WIP 最高峰的首次模擬時間點
+    # 找出各站點發生「WIP 最高峰」與「等待中 Queue 最高峰」的首次模擬時間點
     peak_time_map = {}
+    peak_queue_time_map = {}
     for st in station_names:
         peak_idx = history_df[st].idxmax()
         peak_time_map[st] = float(history_df.loc[peak_idx, "time"])
+
+        q_col = f"{st}__queue"
+        peak_q_idx = history_df[q_col].idxmax()
+        peak_queue_time_map[st] = float(history_df.loc[peak_q_idx, "time"])
 
     analysis_df = stations_df.copy()
     analysis_df["avg_wip"] = analysis_df["station_name"].map(avg_wip_series)
@@ -657,10 +662,11 @@ def analyze_bottlenecks(
     analysis_df["min_wip"] = analysis_df["station_name"].map(min_wip_series)
     analysis_df["max_queue"] = analysis_df["station_name"].map(max_queue_series)
     analysis_df["peak_time"] = analysis_df["station_name"].map(peak_time_map)
+    analysis_df["peak_queue_time"] = analysis_df["station_name"].map(peak_queue_time_map)
 
-    # 1. 依「平均等待中 Queue (avg_queue)」由高至低排序 (瓶頸阻塞名單)
-    ranked_avg_df = analysis_df.sort_values(
-        by=["avg_queue", "avg_wip", "max_queue"], ascending=[False, False, False]
+    # 1. 依「等待中 LOT 數最高峰 (max_queue)」由高至低排序 (瓶頸阻塞峰值名單)
+    ranked_queue_peak_df = analysis_df.sort_values(
+        by=["max_queue", "avg_queue", "max_wip"], ascending=[False, False, False]
     ).reset_index(drop=True)
 
     # 2. 依「WIP 最高峰 (max_wip)」由高至低排序
@@ -687,13 +693,14 @@ def analyze_bottlenecks(
     print(f"  • 人員搬送 Lot 數        : 最高 {tr_max:3d} Lots  |  最低 {tr_min:3d} Lots  |  平均 {tr_avg:6.2f} Lots")
     print("=" * 80 + "\n")
 
-    display_n = max(1, min(int(top_n), len(ranked_avg_df)))
-    print(f"=== 全線【平均等待中 Queue (WIP)】Top {display_n} 瓶頸站點名單 ===")
+    display_n = max(1, min(int(top_n), len(ranked_queue_peak_df)))
+    print(f"=== 全線【等待中 LOT 數最高峰 (Peak Queue)】Top {display_n} 站點名單 ===")
     for idx in range(display_n):
-        row = ranked_avg_df.iloc[idx]
+        row = ranked_queue_peak_df.iloc[idx]
+        peak_q_t_str = format_sim_time(row["peak_queue_time"])
         print(
             f"{idx + 1}. {row['station_name']} - "
-            f"平均排隊: {row['avg_queue']:.2f} Lots (站點總WIP: {row['avg_wip']:.2f}, 最高排隊: {int(row['max_queue'])}) - "
+            f"最高排隊: {int(row['max_queue'])} Lots (發生於 {peak_q_t_str}, 平均排隊: {row['avg_queue']:.2f}, 站點總WIP峰值: {int(row['max_wip'])}) - "
             f"C/T: {row['ct']:.2f} min/lot (機台數: {int(row['capacity'])}, 每日上限: {row['daily_max_lots']:.1f} Lots/天)"
         )
     print("=" * 80 + "\n")
@@ -709,7 +716,7 @@ def analyze_bottlenecks(
         )
     print("=" * 80 + "\n")
 
-    return ranked_avg_df, ranked_peak_df
+    return ranked_queue_peak_df, ranked_peak_df
 
 
 # ==============================================================================
@@ -762,7 +769,7 @@ def build_time_axis_ticks(times: np.ndarray, max_ticks: int = 8) -> Tuple[List[f
 
 def generate_summary_and_station_charts(
     history_df: pd.DataFrame,
-    ranked_avg_df: pd.DataFrame,
+    ranked_queue_peak_df: pd.DataFrame,
     ranked_peak_df: pd.DataFrame,
     daily_lots: float,
     ratio_03sec: float,
@@ -922,30 +929,30 @@ def generate_summary_and_station_charts(
         )
     ax_peak.legend(loc="lower right", fontsize=8.5, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
 
-    # (A-4) 右下：【平均等待中 Queue (Average Queue)】Top N 瓶頸站點排行圖
+    # (A-4) 右下：【等待中 LOT 數最高峰 (Peak Queue)】Top N 站點排行圖
     ax_avg = fig_sum.add_subplot(gs_bot[0, 1])
     ax_avg.set_facecolor("#FFFFFF")
-    sub_avg = ranked_avg_df.iloc[:display_n].copy()
-    y_a = np.arange(len(sub_avg))
-    avg_queue_vals = sub_avg["avg_queue"].values.astype(float)
-    avg_colors = ["#E53E3E" if v >= WIP_ALERT_THRESHOLD else "#2B6CB0" for v in avg_queue_vals]
+    sub_q_peak = ranked_queue_peak_df.iloc[:display_n].copy()
+    y_a = np.arange(len(sub_q_peak))
+    max_queue_vals = sub_q_peak["max_queue"].values.astype(float)
+    queue_colors = ["#E53E3E" if v >= WIP_ALERT_THRESHOLD else "#2B6CB0" for v in max_queue_vals]
 
-    ax_avg.barh(y_a, avg_queue_vals, height=0.58, color=avg_colors, edgecolor="#1A365D", alpha=0.9)
+    ax_avg.barh(y_a, max_queue_vals, height=0.58, color=queue_colors, edgecolor="#1A365D", alpha=0.9)
     ax_avg.axvline(WIP_ALERT_THRESHOLD, color="#E53E3E", linestyle="--", linewidth=1.5, label=f"警戒線 ({WIP_ALERT_THRESHOLD} Lots)")
     ax_avg.set_yticks(y_a)
-    ax_avg.set_yticklabels([f"Top {i+1}: {n}" for i, n in enumerate(sub_avg["station_name"])], fontsize=9, fontweight="bold")
+    ax_avg.set_yticklabels([f"Top {i+1}: {n}" for i, n in enumerate(sub_q_peak["station_name"])], fontsize=9, fontweight="bold")
     ax_avg.invert_yaxis()
-    max_q_val = float(np.max(avg_queue_vals)) if len(avg_queue_vals) > 0 else 10.0
+    max_q_val = float(np.max(max_queue_vals)) if len(max_queue_vals) > 0 else 10.0
     x_limit_avg = max(X_AXIS_MAX * 1.35, WIP_ALERT_THRESHOLD * 1.45, max_q_val * 1.65 + 4.0)
     ax_avg.set_xlim(0, x_limit_avg)
-    ax_avg.set_xlabel("平均等待中數量 (Average Queue Lots)", fontsize=9.5, fontweight="bold")
-    ax_avg.set_title(f"【平均等待中 Queue (Average Queue)】Top {display_n} 瓶頸站點名單", fontsize=11.5, fontweight="bold", color="#2C5282", pad=10)
+    ax_avg.set_xlabel("等待中 LOT 數最高峰 (Peak Queue Lots)", fontsize=9.5, fontweight="bold")
+    ax_avg.set_title(f"【等待中 LOT 數最高峰 (Peak Queue)】Top {display_n} 站點名單", fontsize=11.5, fontweight="bold", color="#2C5282", pad=10)
     ax_avg.grid(axis="x", linestyle=":", alpha=0.6)
-    for i, (q_val, max_q, cap_l) in enumerate(zip(avg_queue_vals, sub_avg["max_queue"], sub_avg["daily_max_lots"])):
+    for i, (q_val, avg_q, q_time) in enumerate(zip(max_queue_vals, sub_q_peak["avg_queue"], sub_q_peak["peak_queue_time"])):
         ax_avg.text(
             q_val + x_limit_avg * 0.015,
             i,
-            f"排隊: {q_val:.2f} (最高排隊: {int(max_q)} | 日上限: {cap_l:.1f})",
+            f"排隊峰值: {int(q_val)} Lots (平均: {avg_q:.2f} | {format_sim_time(q_time)})",
             va="center",
             ha="left",
             fontsize=8.5,
@@ -962,83 +969,84 @@ def generate_summary_and_station_charts(
     # --------------------------------------------------------------------------
     # 圖表 B：Top N 瓶頸站點個別折線分析圖 (一個站點一張圖)
     # --------------------------------------------------------------------------
-    # 針對 WIP 最高峰 Top N (或綜合瓶頸 Top N) 生成獨立折線圖
-    # 我們以 ranked_peak_df 前 display_n 名生成單站分析圖（包含最高峰與平均統計資訊）
+    # 針對等待中 LOT 數最高峰 (或 WIP 最高峰) Top N 站點生成個別分析圖
+    # Y 軸以「等待中的 LOT 數 (Queue)」為核心指標
     max_popup_figs = 10  # 避免使用者設 Top 30 時一次彈出 30 個視窗卡住系統
 
     for idx in range(display_n):
-        row = ranked_peak_df.iloc[idx]
+        row = ranked_queue_peak_df.iloc[idx]
         st_name = row["station_name"]
         q_col = f"{st_name}__queue"
 
         st_wips = history_df[st_name].values.astype(float)
         st_queues = history_df[q_col].values.astype(float)
-        max_w = int(row["max_wip"])
-        min_w = int(row["min_wip"])
-        avg_w = float(row["avg_wip"])
+        max_q = int(row["max_queue"])
         avg_q = float(row["avg_queue"])
-        peak_t = float(row["peak_time"])
+        max_w = int(row["max_wip"])
+        avg_w = float(row["avg_wip"])
+        peak_q_t = float(row["peak_queue_time"])
 
         fig_st, ax_st = plt.subplots(figsize=(11.8, 6.4), dpi=100)
         fig_st.patch.set_facecolor("#F8F9FA")
         ax_st.set_facecolor("#FFFFFF")
 
-        # 繪製該站總 WIP (製程中+等待中) 折線與等待中 Queue 折線
-        ax_st.plot(
-            times,
-            st_wips,
-            color="#2B6CB0",
-            linewidth=2.3,
-            label=f"站點總 WIP (製程+等待) [最高: {max_w}, 最低: {min_w}, 平均: {avg_w:.2f}]",
-        )
+        # 繪製等待中 Queue LOT 數折線（實線）與站點總 WIP 折線（虛線對照）
         ax_st.plot(
             times,
             st_queues,
             color="#DD6B20",
+            linewidth=2.4,
+            label=f"等待中 Queue LOT 數 [最高排隊: {max_q}, 平均排隊: {avg_q:.2f} Lots]",
+        )
+        ax_st.plot(
+            times,
+            st_wips,
+            color="#2B6CB0",
             linewidth=1.5,
-            linestyle=":",
-            label=f"等待中 Queue WIP [平均排隊: {avg_q:.2f} Lots]",
+            linestyle="--",
+            alpha=0.75,
+            label=f"站點總 WIP (製程+等待) [最高: {max_w}, 平均: {avg_w:.2f} Lots]",
         )
 
-        # 在警戒 WIP 數 (WIP_ALERT_THRESHOLD) 的地方畫一條醒目的紅色虛線
+        # 在警戒數 (WIP_ALERT_THRESHOLD) 的地方畫一條醒目的紅色虛線
         ax_st.axhline(
             y=WIP_ALERT_THRESHOLD,
             color="#E53E3E",
             linestyle="--",
             linewidth=2.0,
-            label=f"警戒 WIP 紅色虛線 ({WIP_ALERT_THRESHOLD} Lots)",
+            label=f"警戒等待 LOT 數紅色虛線 ({WIP_ALERT_THRESHOLD} Lots)",
         )
 
-        # 若有超過警戒線的區段，填上淡紅色警示區域 (使用 >= 避免字型缺字亂碼)
+        # 若等待數量超過警戒線的區段，填上淡紅色警示區域
         ax_st.fill_between(
             times,
             WIP_ALERT_THRESHOLD,
-            st_wips,
-            where=(st_wips >= WIP_ALERT_THRESHOLD),
+            st_queues,
+            where=(st_queues >= WIP_ALERT_THRESHOLD),
             color="#FEB2B2",
             alpha=0.45,
             interpolate=True,
-            label="超載警戒區 (WIP >= 警戒線)",
+            label="超載警戒區 (等待中 >= 警戒線)",
         )
-        ax_st.fill_between(times, 0, st_wips, color="#BEE3F8", alpha=0.25)
+        ax_st.fill_between(times, 0, st_queues, color="#FEEBC8", alpha=0.35)
 
-        # 標註最高峰點位 (若靠近左右邊界則自動內縮文字框對齊方向，防止超出圖表外)
+        # 標註等待中 LOT 數最高峰點位 (若靠近左右邊界則自動內縮文字框對齊方向，防止超出圖表外)
         max_sim_t = float(np.max(times)) if len(times) > 0 else 1440.0
-        if peak_t > max_sim_t * 0.85:
+        if peak_q_t > max_sim_t * 0.85:
             annot_ha = "right"
-            text_x = max(0.0, peak_t - max_sim_t * 0.02)
-        elif peak_t < max_sim_t * 0.15:
+            text_x = max(0.0, peak_q_t - max_sim_t * 0.02)
+        elif peak_q_t < max_sim_t * 0.15:
             annot_ha = "left"
-            text_x = min(max_sim_t, peak_t + max_sim_t * 0.02)
+            text_x = min(max_sim_t, peak_q_t + max_sim_t * 0.02)
         else:
             annot_ha = "center"
-            text_x = peak_t
+            text_x = peak_q_t
 
-        ax_st.scatter([peak_t], [max_w], color="#E53E3E", s=70, zorder=5)
+        ax_st.scatter([peak_q_t], [max_q], color="#E53E3E", s=70, zorder=5)
         ax_st.annotate(
-            f"最高峰 WIP: {max_w} Lots\n({format_sim_time(peak_t)})",
-            xy=(peak_t, max_w),
-            xytext=(text_x, max_w + max(2.2, max_w * 0.09)),
+            f"最高排隊: {max_q} Lots\n({format_sim_time(peak_q_t)})",
+            xy=(peak_q_t, max_q),
+            xytext=(text_x, max_q + max(1.8, max_q * 0.09)),
             ha=annot_ha,
             fontsize=9.5,
             fontweight="bold",
@@ -1047,18 +1055,18 @@ def generate_summary_and_station_charts(
             bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFF5F5", edgecolor="#FEB2B2"),
         )
 
-        y_upper = max(X_AXIS_MAX, WIP_ALERT_THRESHOLD + 6, max_w + 6)
+        y_upper = max(X_AXIS_MAX, WIP_ALERT_THRESHOLD + 6, max_q + 6)
         ax_st.set_ylim(0, y_upper)
         ax_st.set_xlim(0, max_sim_t)
         ax_st.set_xticks(tick_vals_full)
         ax_st.set_xticklabels(tick_labels_full, fontsize=9)
 
         ax_st.set_xlabel("模擬時間 (Time)", fontsize=11, fontweight="bold", color="#1A202C", labelpad=8)
-        ax_st.set_ylabel("WIP 數量 (Lots)", fontsize=11, fontweight="bold", color="#1A202C", labelpad=8)
+        ax_st.set_ylabel("等待中 LOT 數量 (Queue Lots)", fontsize=11, fontweight="bold", color="#1A202C", labelpad=8)
         ax_st.set_title(
-            f"【Top {idx+1} 瓶頸站點 WIP 趨勢分析圖】{st_name}\n"
+            f"【Top {idx+1} 瓶頸站點等待中 Queue 趨勢分析圖】{st_name}\n"
             f"(機台數: {int(row['capacity'])} 台 | 混線加權 C/T: {row['ct']:.1f}m | 每日最大產能: {row['daily_max_lots']:.1f} Lots/天 | "
-            f"最高 WIP: {max_w} / 最低: {min_w} / 平均: {avg_w:.2f})",
+            f"最高排隊: {max_q} / 平均排隊: {avg_q:.2f} / 總WIP峰值: {max_w})",
             fontsize=12,
             fontweight="bold",
             color="#1A202C",
@@ -1541,8 +1549,8 @@ def main():
     )
     history_df = simulator.run()
 
-    # Step 4: 自動識別並印出全線 WIP 最高/最低/平均總結、平均 WIP Top N 與最高峰 WIP Top N 名單
-    ranked_avg_df, ranked_peak_df = analyze_bottlenecks(stations_df, history_df, top_n=top_n)
+    # Step 4: 自動識別並印出全線 WIP 最高/最低/平均總結、等待中LOT數最高峰 Top N 與站點總WIP最高峰 Top N 名單
+    ranked_queue_peak_df, ranked_peak_df = analyze_bottlenecks(stations_df, history_df, top_n=top_n)
 
     is_headless = os.environ.get("HEADLESS_TEST", "0") == "1"
 
@@ -1552,7 +1560,7 @@ def main():
         create_and_show_animation(
             stations_df=stations_df,
             history_df=history_df,
-            ranked_df=ranked_avg_df,
+            ranked_df=ranked_queue_peak_df,
             daily_lots=daily_lots,
             ratio_03sec=ratio_03sec,
             ratio_01sg=ratio_01sg,
@@ -1567,7 +1575,7 @@ def main():
     # (無論動態模擬結束後或靜態模擬，皆會自動生成圖檔並彈出圖表視窗)
     generate_summary_and_station_charts(
         history_df=history_df,
-        ranked_avg_df=ranked_avg_df,
+        ranked_queue_peak_df=ranked_queue_peak_df,
         ranked_peak_df=ranked_peak_df,
         daily_lots=daily_lots,
         ratio_03sec=ratio_03sec,
