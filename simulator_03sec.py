@@ -47,10 +47,19 @@ if sys.platform.startswith("win"):
         pass
 
 
+# 取得程式執行時的真實基礎目錄（相容於 PyInstaller 單一 exe 封裝環境）
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ==============================================================================
 # 1. 全域模擬參數設定 (使用者可直接修改此處常數，或於執行時互動輸入)
 # ==============================================================================
 EXCEL_PATHS = [
+    os.path.join(BASE_DIR, "DOC", "SourceData.xlsx"),
+    os.path.join(BASE_DIR, "doc", "SourceData.xlsx"),
+    os.path.join(BASE_DIR, "SourceData.xlsx"),
     os.path.join("DOC", "SourceData.xlsx"),
     os.path.join("doc", "SourceData.xlsx"),
     "SourceData.xlsx",
@@ -60,7 +69,7 @@ DEFAULT_SIM_MODE = "static"     # 預設模擬模式："dynamic" (動態模擬�
 DEFAULT_DAILY_LOTS = 29          # 預設每日投入 Lot 總數 (實際生產建議範圍：10 ~ 30 Lots/天)
 DEFAULT_MIX_RATIO_STR = "7:3"    # 預設 03SEC 與 01SG 混線比例 (7:3 代表 70% 03SEC + 30% 01SG)
 DEFAULT_WORK_HOURS = 20.0        # 預設每天生產時間 (小時)，預設 20 小時 (即 60 * 20 = 1200 分鐘/天)
-DEFAULT_RUN_PCT = 80.0           # 預設機台 RUN% (預設 80%，故每天每台設備實際生產時間為 60 * 20 * 0.8 = 960 分鐘)
+DEFAULT_RUN_PCT = 83.0           # 預設機台 RUN% (預設 80%，故每天每台設備實際生產時間為 60 * 20 * 0.8 = 960 分鐘)
 DEFAULT_TRANSFER_MIN = 8.0       # 預設站與站之間人員搬送時間 (分鐘/次，設為 0 代表不計搬送時間)
 DEFAULT_TOP_N = 3                # 預設顯示 Top N 瓶頸站點數量 (可自由設定要顯示 Top 多少)
 
@@ -70,7 +79,7 @@ MONITOR_INTERVAL = 15            # 狀態紀錄間隔 (分鐘)
 WIP_ALERT_THRESHOLD = 20         # WIP 紅色警示門檻：超過此數值時長條圖變成紅色，且分析圖在此處畫紅色虛線
 X_AXIS_MAX = 30                  # 視覺化 X 軸固定上限：30 Lots
 RANDOM_SEED = 42                 # 固定隨機種子，確保簡報展示結果穩定可重現
-OUTPUT_CHART_DIR = "output_charts"  # 自動儲存總結圖與 Top N 分析圖的資料夾路徑
+OUTPUT_CHART_DIR = os.path.join(BASE_DIR, "output_charts")  # 自動儲存總結圖與 Top N 分析圖的資料夾路徑
 
 
 # ==============================================================================
