@@ -21,6 +21,7 @@
 """
 
 import argparse
+import configparser
 from datetime import datetime
 import math
 import os
@@ -54,8 +55,68 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ==============================================================================
-# 1. 全域模擬參數設定 (使用者可直接修改此處常數，或於執行時互動輸入)
+# 1. 設定檔 (config.ini) 載入模組與全域參數
 # ==============================================================================
+CONFIG_PATH = os.path.join(BASE_DIR, "config.ini")
+
+def load_or_create_config(cfg_path: str) -> configparser.ConfigParser:
+    """
+    從 config.ini 讀取模擬參數，若檔案不存在則自動產出一份包含完整註解的預設設定檔。
+    """
+    config = configparser.ConfigParser()
+    if os.path.exists(cfg_path):
+        try:
+            config.read(cfg_path, encoding="utf-8")
+            if "SIMULATION" in config:
+                return config
+        except Exception as e:
+            print(f"[設定檔讀取警告] 讀取 '{cfg_path}' 發生錯誤 ({e})，使用系統內建預設值。")
+
+    # 若不存在或格式不合，建立預設 config.ini
+    config["SIMULATION"] = {
+        "sim_mode": "static",
+        "daily_lots": "29",
+        "mix_ratio": "7:3",
+        "work_hours": "20.0",
+        "run_pct": "83.0",
+        "transfer_min": "8.0",
+        "top_n": "3",
+        "sim_duration": "10080",
+        "warmup_duration": "10080",
+        "alert_threshold": "20",
+    }
+    try:
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            f.write("; ==============================================================================\n")
+            f.write("; 03SEC & 01SG 全線多站點動態混線模擬器設定檔 (Production Simulator Config)\n")
+            f.write("; 本檔案支援直接以文字編輯器 (如記事本 Notepad) 修改，儲存後重新執行模擬即生效\n")
+            f.write("; ==============================================================================\n\n")
+            config.write(f)
+    except Exception:
+        pass
+    return config
+
+# 讀取設定檔
+_cfg = load_or_create_config(CONFIG_PATH)
+_sim_sec = _cfg["SIMULATION"] if "SIMULATION" in _cfg else {}
+
+DEFAULT_SIM_MODE = _sim_sec.get("sim_mode", "static").strip().lower()
+DEFAULT_DAILY_LOTS = float(_sim_sec.get("daily_lots", 29.0))
+DEFAULT_MIX_RATIO_STR = _sim_sec.get("mix_ratio", "7:3").strip()
+DEFAULT_WORK_HOURS = float(_sim_sec.get("work_hours", 20.0))
+DEFAULT_RUN_PCT = float(_sim_sec.get("run_pct", 83.0))
+DEFAULT_TRANSFER_MIN = float(_sim_sec.get("transfer_min", 8.0))
+DEFAULT_TOP_N = int(_sim_sec.get("top_n", 3))
+
+SIM_DURATION = float(_sim_sec.get("sim_duration", 10080.0))
+WARMUP_DURATION = float(_sim_sec.get("warmup_duration", 10080.0))
+MONITOR_INTERVAL = float(_sim_sec.get("monitor_interval", 15.0))
+WIP_ALERT_THRESHOLD = int(float(_sim_sec.get("alert_threshold", 20)))
+
+X_AXIS_MAX = 30                  # 視覺化 X 軸固定上限：30 Lots
+RANDOM_SEED = 42                 # 固定隨機種子，確保簡報展示結果穩定可重現
+OUTPUT_CHART_DIR = os.path.join(BASE_DIR, "output_charts")  # 自動儲存總結圖與 Top N 分析圖的資料夾路徑
+
 EXCEL_PATHS = [
     os.path.join(BASE_DIR, "DOC", "SourceData.xlsx"),
     os.path.join(BASE_DIR, "doc", "SourceData.xlsx"),
@@ -64,22 +125,6 @@ EXCEL_PATHS = [
     os.path.join("doc", "SourceData.xlsx"),
     "SourceData.xlsx",
 ]
-
-DEFAULT_SIM_MODE = "static"     # 預設模擬模式："dynamic" (動態模擬：播放動畫+總結圖+分析圖) 或 "static" (靜態模擬：直接產生總結圖+分析圖)
-DEFAULT_DAILY_LOTS = 29          # 預設每日投入 Lot 總數 (實際生產建議範圍：10 ~ 30 Lots/天)
-DEFAULT_MIX_RATIO_STR = "7:3"    # 預設 03SEC 與 01SG 混線比例 (7:3 代表 70% 03SEC + 30% 01SG)
-DEFAULT_WORK_HOURS = 20.0        # 預設每天生產時間 (小時)，預設 20 小時 (即 60 * 20 = 1200 分鐘/天)
-DEFAULT_RUN_PCT = 83.0           # 預設機台 RUN% (預設 80%，故每天每台設備實際生產時間為 60 * 20 * 0.8 = 960 分鐘)
-DEFAULT_TRANSFER_MIN = 8.0       # 預設站與站之間人員搬送時間 (分鐘/次，設為 0 代表不計搬送時間)
-DEFAULT_TOP_N = 3                # 預設顯示 Top N 瓶頸站點數量 (可自由設定要顯示 Top 多少)
-
-SIM_DURATION = 10080              # 正式模擬時間長度 (可依天數或分鐘設定)
-WARMUP_DURATION = 10080          # 產線預熱時間：確保 Day 1, 00:00 啟動時全線皆有正常期初 WIP
-MONITOR_INTERVAL = 15            # 狀態紀錄間隔 (分鐘)
-WIP_ALERT_THRESHOLD = 20         # WIP 紅色警示門檻：超過此數值時長條圖變成紅色，且分析圖在此處畫紅色虛線
-X_AXIS_MAX = 30                  # 視覺化 X 軸固定上限：30 Lots
-RANDOM_SEED = 42                 # 固定隨機種子，確保簡報展示結果穩定可重現
-OUTPUT_CHART_DIR = os.path.join(BASE_DIR, "output_charts")  # 自動儲存總結圖與 Top N 分析圖的資料夾路徑
 
 
 # ==============================================================================
