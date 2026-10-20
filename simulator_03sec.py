@@ -56,8 +56,8 @@ EXCEL_PATHS = [
     "SourceData.xlsx",
 ]
 
-DEFAULT_SIM_MODE = "dynamic"     # 預設模擬模式："dynamic" (動態模擬：播放動畫+總結圖+分析圖) 或 "static" (靜態模擬：直接產生總結圖+分析圖)
-DEFAULT_DAILY_LOTS = 24          # 預設每日投入 Lot 總數 (實際生產建議範圍：10 ~ 30 Lots/天)
+DEFAULT_SIM_MODE = "static"     # 預設模擬模式："dynamic" (動態模擬：播放動畫+總結圖+分析圖) 或 "static" (靜態模擬：直接產生總結圖+分析圖)
+DEFAULT_DAILY_LOTS = 29          # 預設每日投入 Lot 總數 (實際生產建議範圍：10 ~ 30 Lots/天)
 DEFAULT_MIX_RATIO_STR = "7:3"    # 預設 03SEC 與 01SG 混線比例 (7:3 代表 70% 03SEC + 30% 01SG)
 DEFAULT_WORK_HOURS = 20.0        # 預設每天生產時間 (小時)，預設 20 小時 (即 60 * 20 = 1200 分鐘/天)
 DEFAULT_RUN_PCT = 80.0           # 預設機台 RUN% (預設 80%，故每天每台設備實際生產時間為 60 * 20 * 0.8 = 960 分鐘)
@@ -236,14 +236,16 @@ def build_combined_station_summary(
         if st_key not in station_order:
             station_order.append(st_key)
 
-    # 聚合每個站點在所有工序中出現過的所有相異有效設備，動態計算站點總容量 (Capacity)
+    # 聚合每個站點在所有工序中的設備數量，動態計算站點總容量 (Capacity)
+    # 原則：可用機台填了幾個欄位就代表幾台設備，名稱重複（如兩個新機）亦代表兩台獨立設備
     station_capacity_map: Dict[str, int] = {}
     for st_key, grp in all_routings.groupby("station_key"):
-        all_unique_eqs = set()
+        max_machines_in_step = 0
         for eqs in grp["valid_eqs"]:
-            all_unique_eqs.update(eqs)
-        if len(all_unique_eqs) > 0:
-            station_capacity_map[st_key] = max(1, len(all_unique_eqs))
+            if len(eqs) > max_machines_in_step:
+                max_machines_in_step = len(eqs)
+        if max_machines_in_step > 0:
+            station_capacity_map[st_key] = max_machines_in_step
         else:
             station_capacity_map[st_key] = max(1, int(grp["capacity"].max()))
 
