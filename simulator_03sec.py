@@ -347,8 +347,13 @@ def load_process_data(
     work_hours: float = DEFAULT_WORK_HOURS,
 ) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
     """
-    讀取 DOC/SourceData.xlsx 中的『03SEC CT (2+2)』與『01SG CT (1+1)』雙產品工藝流程。
+    讀取 DOC/SourceData.xlsx 中的『03SEC CT (2+2)』與『01SG CT (1+1)』雙產品工藝流程，
+    並於啟動時提供明確的載入提示與錯誤排除引導。
     """
+    print("=" * 88)
+    print("📂 [資料載入提示] 正在搜尋並讀取生產工藝資料檔 'SourceData.xlsx'，請稍候...")
+    print("=" * 88)
+
     excel_path = None
     for path in EXCEL_PATHS:
         if os.path.exists(path):
@@ -356,8 +361,23 @@ def load_process_data(
             break
 
     if excel_path is None:
-        print("[系統提示] 找不到 DOC/SourceData.xlsx，自動載入內建雙產品 Mock Data。")
+        print("\n" + "!" * 88)
+        print("❌ [錯誤警告：找不到工藝資料檔 SourceData.xlsx]")
+        print("系統在以下預設路徑均未搜尋到檔案：")
+        for idx, p in enumerate(EXCEL_PATHS, 1):
+            abs_p = os.path.abspath(p)
+            print(f"   {idx}. {p} (絕對路徑: {abs_p})")
+        print("\n【操作人員除錯建議】")
+        print("  1. 請確認 'SourceData.xlsx' 是否已正確放置於程式或執行檔所在目錄的 'DOC\\' 子資料夾中。")
+        print("  2. 若檔案名稱大小寫不同或被更名，請更正為 'SourceData.xlsx'。")
+        print("  3. 若該檔案目前正被 Microsoft Excel 開啟編輯中，請存檔並關閉，避免檔案讀取鎖定衝突。")
+        print("!" * 88 + "\n")
+        print("[系統提示] 本次將暫時切換至內建雙產品 Mock Data 進行展示運算。\n")
         return get_mock_dual_product_data(ratio_03sec, ratio_01sg, run_pct, work_hours)
+
+    abs_excel_path = os.path.abspath(excel_path)
+    print(f"🔍 [檔案定位成功] 找到工藝資料檔: {abs_excel_path}")
+    print("   正在解析產品工藝流程與可用機台配置表...")
 
     try:
         xl = pd.ExcelFile(excel_path)
@@ -365,6 +385,7 @@ def load_process_data(
         routing_01sg = parse_product_routing_sheet(xl, "01SG CT (1+1)", "01SG")
 
         if routing_03sec.empty or routing_01sg.empty:
+            print(f"⚠️ [資料警告] '{excel_path}' 中的工藝工作表內容為空，將切換至內建 Mock Data。")
             return get_mock_dual_product_data(ratio_03sec, ratio_01sg, run_pct, work_hours)
 
         stations_df = build_combined_station_summary(
@@ -376,15 +397,20 @@ def load_process_data(
         routing_01sg["station_name"] = routing_01sg["station_key"].map(key_to_name)
 
         print(
-            f"[資料載入成功] 已從 '{excel_path}' 載入雙產品全線工藝：\n"
+            f"✅ [資料載入成功] 已從 '{excel_path}' 載入雙產品全線工藝：\n"
             f"  • 03SEC (2+2 疊構) : 共 {len(routing_03sec)} 道有效工序 (D/B C/T = 170.50 min/lot)\n"
             f"  • 01SG  (1+1 疊構) : 共 {len(routing_01sg)} 道有效工序 (D/B C/T = 118.98 min/lot)\n"
-            f"  • 整合共用設備站點 : 共 {len(stations_df)} 個核心站點 (含 02. D/B-IC D/B 完整納入計算)"
+            f"  • 整合共用設備站點 : 共 {len(stations_df)} 個核心站點 (含 02. D/B-IC D/B 完整納入計算)\n"
         )
         return stations_df, {"03SEC": routing_03sec, "01SG": routing_01sg}
 
     except Exception as exc:
-        print(f"[資料讀取警告] 讀取 Excel 發生例外 ({exc})，自動切換至內建 Mock Data。")
+        print("\n" + "!" * 88)
+        print(f"❌ [資料讀取例外錯誤] 解析 '{excel_path}' 失敗！")
+        print(f"   詳細錯誤訊息: {exc}")
+        print("【操作人員建議】請檢查 Excel 檔案是否損毀、工作表名稱是否吻合、或檔案是否正被其他軟體獨佔開啟。")
+        print("!" * 88 + "\n")
+        print("[系統提示] 本次將自動切換至內建 Mock Data。\n")
         return get_mock_dual_product_data(ratio_03sec, ratio_01sg, run_pct, work_hours)
 
 
