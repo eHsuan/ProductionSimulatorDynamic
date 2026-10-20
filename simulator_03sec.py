@@ -690,9 +690,9 @@ def analyze_bottlenecks(
     tr_avg = float(history_df["in_transfer"].mean())
 
     print("=== 全線產線 WIP 與人員搬送 Lot 統計總結 (最高 / 最低 / 平均) ===")
-    print(f"  • 產線總 WIP (站點+搬送) : 最高 {line_max:3d} Lots  |  最低 {line_min:3d} Lots  |  平均 {line_avg:6.2f} Lots")
-    print(f"  • 站點總 WIP (製程+等待) : 最高 {st_max:3d} Lots  |  最低 {st_min:3d} Lots  |  平均 {st_avg:6.2f} Lots")
-    print(f"  • 人員搬送 Lot 數        : 最高 {tr_max:3d} Lots  |  最低 {tr_min:3d} Lots  |  平均 {tr_avg:6.2f} Lots")
+    print(f"  • 全站產線總 WIP (站點+搬送) : 最高 {line_max:3d} Lots  |  最低 {line_min:3d} Lots  |  平均 {line_avg:6.2f} Lots")
+    print(f"  • 全站站點總 WIP (製程+等待) : 最高 {st_max:3d} Lots  |  最低 {st_min:3d} Lots  |  平均 {st_avg:6.2f} Lots")
+    print(f"  • 全站人員搬送中 Lot 數        : 最高 {tr_max:3d} Lots  |  最低 {tr_min:3d} Lots  |  平均 {tr_avg:6.2f} Lots")
     print("=" * 80 + "\n")
 
     display_n = max(1, min(int(top_n), len(ranked_queue_peak_df)))
@@ -859,14 +859,14 @@ def generate_summary_and_station_charts(
     q_max, q_min, q_avg = int(history_df["total_queue"].max()), int(history_df["total_queue"].min()), float(history_df["total_queue"].mean())
     tr_max, tr_min, tr_avg = int(history_df["in_transfer"].max()), int(history_df["in_transfer"].min()), float(history_df["in_transfer"].mean())
 
-    ax_table.set_title("產線 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)", fontsize=11.5, fontweight="bold", color="#2C5282", pad=10)
+    ax_table.set_title("全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)", fontsize=11.5, fontweight="bold", color="#2C5282", pad=10)
 
     table_data = [
-        ["產線總 WIP (站點+搬送)", f"{line_max} Lots", f"{line_min} Lots", f"{line_avg:.2f} Lots"],
-        ["站點總 WIP (製程+等待)", f"{st_max} Lots", f"{st_min} Lots", f"{st_avg:.2f} Lots"],
-        ["  • 機台製程中 WIP", f"{srv_max} Lots", f"{srv_min} Lots", f"{srv_avg:.2f} Lots"],
-        ["  • 站點等待中 Queue", f"{q_max} Lots", f"{q_min} Lots", f"{q_avg:.2f} Lots"],
-        ["人員搬送中 Lot 數", f"{tr_max} Lots", f"{tr_min} Lots", f"{tr_avg:.2f} Lots"],
+        ["全站產線總 WIP (站點+搬送)", f"{line_max} Lots", f"{line_min} Lots", f"{line_avg:.2f} Lots"],
+        ["全站站點總 WIP (製程+等待)", f"{st_max} Lots", f"{st_min} Lots", f"{st_avg:.2f} Lots"],
+        ["  • 全站機台製程中 WIP", f"{srv_max} Lots", f"{srv_min} Lots", f"{srv_avg:.2f} Lots"],
+        ["  • 全站等待中 Queue", f"{q_max} Lots", f"{q_min} Lots", f"{q_avg:.2f} Lots"],
+        ["全站人員搬送中 Lot 數", f"{tr_max} Lots", f"{tr_min} Lots", f"{tr_avg:.2f} Lots"],
     ]
     col_labels = ["統計項目", "最高 (Max)", "最低 (Min)", "平均 (Avg)"]
 
