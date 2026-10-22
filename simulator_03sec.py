@@ -282,59 +282,60 @@ def parse_product_routing_sheet(xl: pd.ExcelFile, sheet_name: str, product_code:
 def resolve_station_group_gen2(proc_code: str, proc_name: str, line_group: str) -> str:
     """
     將二代線工藝流程中的工序對應至真實的物理產線站點 (Station Key)。
-    二代線已將設備整合成線，回流共用同一套線體/設備的製程歸戶至同一站點。
+    二代線已將設備整合成線，回流共用同一套線體/設備的製程歸戶至同一站點，
+    並純粹以製程名稱顯示（不含設備編號或廠商別名）。
     """
     if proc_code.startswith("UPDB"):
-        return "D/B-IC D/B (Die Bond)"
+        return "D/B-IC D/B"
     elif proc_code.startswith("UPBO") or proc_code.startswith("UPRO"):
-        return "營錡水平粗化新線 (粗化)"
+        return "粗化"
     elif proc_code.startswith("UPLM"):
         if "微影" in line_group or "乾膜" in proc_name:
-            return "RDL 乾膜壓合 (LF0014)"
-        return "ABF film 壓膜/壓合 (LF0003)"
+            return "乾膜壓合"
+        return "ABF film- 膠材對壓 / ABF-film 壓合"
     elif proc_code.startswith("UPOV"):
         if "壓膜" in line_group or "Cure" in proc_name or "cure" in proc_name:
-            return "垂直隧道爐-ABF烘烤 (Cure)"
+            return "ABF-Half & Full Cure / Pre+Full cure"
         elif "軟烤" in proc_name or proc_code in ("UPOV021", "UPOV027", "UPOV030"):
-            return "真空回焊爐-Via/SM 軟烤"
-        return "垂直隧道爐-Via/SM 硬烤"
+            return "SM軟烤"
+        return "SM硬烤"
     elif proc_code.startswith("UPLA"):
-        return "LASER 雷射打孔 (三菱綠光雷射)"
+        return "A/B面LASER打孔"
     elif proc_code.startswith("UPDR"):
-        return "CF4 Plasma 去膠渣 (馗鼎新線)"
+        return "去膠渣-CF4 plasma"
     elif proc_code.startswith("UPCL"):
-        return "營錡水平酸洗新線 (酸洗)"
+        return "酸洗"
     elif proc_code.startswith("UPET"):
         if proc_code == "UPET011" or "SM-Cu" in proc_name:
-            return "綠漆 Cu 蝕刻新線 (SM-Cu蝕刻)"
-        return "NiCr 水平蝕刻新線 (去膜/Cu/NiCr蝕刻)"
+            return "SM-Cu蝕刻"
+        return "去膜、Cu蝕刻、NiCr蝕刻"
     elif proc_code.startswith("UPMS"):
         if proc_code == "UPMS036" or "NiAu" in proc_name:
-            return "X-Ray NiAu 厚度量測 (XR0008)"
+            return "NiAu-厚度量測"
         elif proc_code in ("UPMS011", "UPMS022", "UPMS023", "UPMS030") or "SM-尺寸" in proc_name or "Cu-尺寸" in proc_name:
-            return "SM/Cu 人工金相尺寸量測 (TS0014)"
-        return "Nikon 半自動尺寸/電性量測 (TS0145)"
+            return "SM/Cu-尺寸量測"
+        return "厚度孔徑/RDL/Via-2尺寸與電性量測"
     elif proc_code.startswith("UPSC"):
-        return "AOI 外觀自動光學檢查 (VC1548)"
+        return "AOI外觀檢查"
     elif proc_code.startswith("UPSP"):
-        return "Sputter 濺鍍著膜 (SP0043/04)"
+        return "RDL0層-著膜"
     elif proc_code == "UPPLXXX" or "化銅" in proc_name:
-        return "化學鍍銅線 (化銅線)"
+        return "化學鍍銅"
     elif proc_code.startswith("UPEX"):
         if "印刷" in line_group or "SM" in proc_name or "Via-2" in proc_name:
-            return "Via/SM 防焊曝光 (芯碁微)"
-        return "RDL 線路乾膜曝光 (芯碁微)"
+            return "SM曝光"
+        return "乾膜曝光"
     elif proc_code.startswith("UPDE"):
         if "印刷" in line_group or "SM" in proc_name or "Via-2" in proc_name:
-            return "Via/SM 綠漆顯影新線 (營錡顯影)"
-        return "RDL 乾膜顯影新線 (營錡顯影)"
+            return "綠漆顯影"
+        return "乾膜顯影"
     elif proc_code.startswith("UPPL"):
         if "掛鍍金" in line_group or "NiAu" in proc_name or proc_code in ("UPPL014", "UPPL023"):
-            return "龍門式雙面電鍍 NiAu 新線"
-        return "頂瑞龍門雙面電鍍 Cu 新線"
+            return "雙面電鍍NiAu"
+        return "電鍍Cu (龍門)"
     elif proc_code.startswith("UPPR"):
-        return "Via/SM 樹脂綠漆印刷 (PR0254)"
-    return f"{proc_name} ({line_group if line_group else '二代線'})"
+        return "綠漆印刷"
+    return proc_name
 
 
 def parse_product_routing_sheet_gen2(xl: pd.ExcelFile, sheet_name: str, product_code: str) -> pd.DataFrame:
