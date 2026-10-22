@@ -74,6 +74,7 @@ def load_or_create_config(cfg_path: str) -> configparser.ConfigParser:
 
     # 若不存在或格式不合，建立預設 config.ini
     config["SIMULATION"] = {
+        "line_gen": "1",
         "sim_mode": "static",
         "daily_lots": "29",
         "mix_ratio": "7:3",
@@ -100,6 +101,7 @@ def load_or_create_config(cfg_path: str) -> configparser.ConfigParser:
 _cfg = load_or_create_config(CONFIG_PATH)
 _sim_sec = _cfg["SIMULATION"] if "SIMULATION" in _cfg else {}
 
+DEFAULT_LINE_GEN = int(float(_sim_sec.get("line_gen", 1)))
 DEFAULT_SIM_MODE = _sim_sec.get("sim_mode", "static").strip().lower()
 DEFAULT_DAILY_LOTS = float(_sim_sec.get("daily_lots", 29.0))
 DEFAULT_MIX_RATIO_STR = _sim_sec.get("mix_ratio", "7:3").strip()
@@ -124,6 +126,15 @@ EXCEL_PATHS = [
     os.path.join("DOC", "SourceData.xlsx"),
     os.path.join("doc", "SourceData.xlsx"),
     "SourceData.xlsx",
+]
+
+EXCEL_PATHS_GEN2 = [
+    os.path.join(BASE_DIR, "DOC", "SourceData2.xlsx"),
+    os.path.join(BASE_DIR, "doc", "SourceData2.xlsx"),
+    os.path.join(BASE_DIR, "SourceData2.xlsx"),
+    os.path.join("DOC", "SourceData2.xlsx"),
+    os.path.join("doc", "SourceData2.xlsx"),
+    "SourceData2.xlsx",
 ]
 
 
@@ -268,6 +279,133 @@ def parse_product_routing_sheet(xl: pd.ExcelFile, sheet_name: str, product_code:
     return pd.DataFrame(routing_steps)
 
 
+def resolve_station_group_gen2(proc_code: str, proc_name: str, line_group: str) -> str:
+    """
+    將二代線工藝流程中的工序對應至真實的物理產線站點 (Station Key)。
+    二代線已將設備整合成線，回流共用同一套線體/設備的製程歸戶至同一站點。
+    """
+    if proc_code.startswith("UPDB"):
+        return "D/B-IC D/B (Die Bond)"
+    elif proc_code.startswith("UPBO") or proc_code.startswith("UPRO"):
+        return "營錡水平粗化新線 (粗化)"
+    elif proc_code.startswith("UPLM"):
+        if "微影" in line_group or "乾膜" in proc_name:
+            return "RDL 乾膜壓合 (LF0014)"
+        return "ABF film 壓膜/壓合 (LF0003)"
+    elif proc_code.startswith("UPOV"):
+        if "壓膜" in line_group or "Cure" in proc_name or "cure" in proc_name:
+            return "垂直隧道爐-ABF烘烤 (Cure)"
+        elif "軟烤" in proc_name or proc_code in ("UPOV021", "UPOV027", "UPOV030"):
+            return "真空回焊爐-Via/SM 軟烤"
+        return "垂直隧道爐-Via/SM 硬烤"
+    elif proc_code.startswith("UPLA"):
+        return "LASER 雷射打孔 (三菱綠光雷射)"
+    elif proc_code.startswith("UPDR"):
+        return "CF4 Plasma 去膠渣 (馗鼎新線)"
+    elif proc_code.startswith("UPCL"):
+        return "營錡水平酸洗新線 (酸洗)"
+    elif proc_code.startswith("UPET"):
+        if proc_code == "UPET011" or "SM-Cu" in proc_name:
+            return "綠漆 Cu 蝕刻新線 (SM-Cu蝕刻)"
+        return "NiCr 水平蝕刻新線 (去膜/Cu/NiCr蝕刻)"
+    elif proc_code.startswith("UPMS"):
+        if proc_code == "UPMS036" or "NiAu" in proc_name:
+            return "X-Ray NiAu 厚度量測 (XR0008)"
+        elif proc_code in ("UPMS011", "UPMS022", "UPMS023", "UPMS030") or "SM-尺寸" in proc_name or "Cu-尺寸" in proc_name:
+            return "SM/Cu 人工金相尺寸量測 (TS0014)"
+        return "Nikon 半自動尺寸/電性量測 (TS0145)"
+    elif proc_code.startswith("UPSC"):
+        return "AOI 外觀自動光學檢查 (VC1548)"
+    elif proc_code.startswith("UPSP"):
+        return "Sputter 濺鍍著膜 (SP0043/04)"
+    elif proc_code == "UPPLXXX" or "化銅" in proc_name:
+        return "化學鍍銅線 (化銅線)"
+    elif proc_code.startswith("UPEX"):
+        if "印刷" in line_group or "SM" in proc_name or "Via-2" in proc_name:
+            return "Via/SM 防焊曝光 (芯碁微)"
+        return "RDL 線路乾膜曝光 (芯碁微)"
+    elif proc_code.startswith("UPDE"):
+        if "印刷" in line_group or "SM" in proc_name or "Via-2" in proc_name:
+            return "Via/SM 綠漆顯影新線 (營錡顯影)"
+        return "RDL 乾膜顯影新線 (營錡顯影)"
+    elif proc_code.startswith("UPPL"):
+        if "掛鍍金" in line_group or "NiAu" in proc_name or proc_code in ("UPPL014", "UPPL023"):
+            return "龍門式雙面電鍍 NiAu 新線"
+        return "頂瑞龍門雙面電鍍 Cu 新線"
+    elif proc_code.startswith("UPPR"):
+        return "Via/SM 樹脂綠漆印刷 (PR0254)"
+    return f"{proc_name} ({line_group if line_group else '二代線'})"
+
+
+def parse_product_routing_sheet_gen2(xl: pd.ExcelFile, sheet_name: str, product_code: str) -> pd.DataFrame:
+    """
+    解析二代線單一產品工作表（如『2代-03SEC CT (2+2)』或『2代-01SG CT (1+1)』）的完整工藝流程：
+    - C 欄：製程編號
+    - D 欄：製程名稱
+    - E 欄：站點(線)
+    - F 欄：Cycle Time (每個機台做一個 LOT 要多少分鐘)
+    - G 欄：機台數 (這個站點共有多少台設備可用)
+    """
+    raw_df = xl.parse(sheet_name)
+    if "製程序號" in raw_df.columns:
+        raw_df = raw_df.sort_values(by="製程序號", ascending=True).reset_index(drop=True)
+
+    # 自動匹配 F 欄 (Cycle Time) 與 G 欄 (機台數)
+    ct_col = None
+    cap_col = None
+    for c in raw_df.columns:
+        c_str = str(c).strip()
+        if "Cycle Time" in c_str or c_str.upper().startswith("CT"):
+            ct_col = c
+        elif "機台數" in c_str or "設備數" in c_str:
+            cap_col = c
+    if ct_col is None and len(raw_df.columns) >= 6:
+        ct_col = raw_df.columns[5]
+    if cap_col is None and len(raw_df.columns) >= 7:
+        cap_col = raw_df.columns[6]
+
+    routing_steps = []
+    for idx, row in raw_df.iterrows():
+        proc_code = str(row.get("製程編號", "")).strip()
+        proc_name = str(row.get("製程名稱", "")).strip()
+        line_group = str(row.get("站點(線)", "")).strip()
+        ct_val = row.get(ct_col, np.nan) if ct_col is not None else np.nan
+        cap_val = row.get(cap_col, np.nan) if cap_col is not None else np.nan
+
+        if not proc_code or proc_code == "nan":
+            continue
+
+        try:
+            ct = float(ct_val)
+        except (ValueError, TypeError):
+            continue
+
+        if pd.isna(ct) or ct <= 0:
+            continue
+
+        try:
+            cap = int(float(cap_val))
+            if cap <= 0:
+                cap = 1
+        except (ValueError, TypeError):
+            cap = 0  # 若單列未填寫，後續由同站點有效機台數補齊
+
+        station_key = resolve_station_group_gen2(proc_code, proc_name, line_group)
+
+        routing_steps.append({
+            "product": product_code,
+            "step_seq": (idx + 1) * 10,
+            "proc_code": proc_code,
+            "proc_name": proc_name,
+            "station_key": station_key,
+            "capacity": cap,
+            "valid_eqs": [],
+            "ct": round(ct, 4),
+        })
+
+    return pd.DataFrame(routing_steps)
+
+
 def build_combined_station_summary(
     routing_03sec: pd.DataFrame,
     routing_01sg: pd.DataFrame,
@@ -291,7 +429,8 @@ def build_combined_station_summary(
             station_order.append(st_key)
 
     # 聚合每個站點在所有工序中的設備數量，動態計算站點總容量 (Capacity)
-    # 原則：可用機台填了幾個欄位就代表幾台設備，名稱重複（如兩個新機）亦代表兩台獨立設備
+    # 原則：可用機台填了幾個欄位就代表幾台設備，名稱重複（如兩個新機）亦代表兩台獨立設備；
+    # 若為二代線直接提供機台數欄位，則採用該站點最常出現的有效機台數 (眾數)，避免單一列誤植影響產能計算。
     station_capacity_map: Dict[str, int] = {}
     for st_key, grp in all_routings.groupby("station_key"):
         max_machines_in_step = 0
@@ -301,7 +440,12 @@ def build_combined_station_summary(
         if max_machines_in_step > 0:
             station_capacity_map[st_key] = max_machines_in_step
         else:
-            station_capacity_map[st_key] = max(1, int(grp["capacity"].max()))
+            valid_caps = [int(c) for c in grp["capacity"] if pd.notna(c) and int(c) > 0]
+            if len(valid_caps) > 0:
+                mode_series = pd.Series(valid_caps).mode()
+                station_capacity_map[st_key] = int(mode_series.iloc[0]) if not mode_series.empty else max(valid_caps)
+            else:
+                station_capacity_map[st_key] = 1
 
     run_rate = max(0.05, min(1.0, run_pct / 100.0))
     work_hours_clamped = max(1.0, min(24.0, float(work_hours)))
@@ -390,44 +534,56 @@ def load_process_data(
     ratio_01sg: float = 0.3,
     run_pct: float = DEFAULT_RUN_PCT,
     work_hours: float = DEFAULT_WORK_HOURS,
+    line_gen: int = DEFAULT_LINE_GEN,
 ) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]]:
     """
-    讀取 DOC/SourceData.xlsx 中的『03SEC CT (2+2)』與『01SG CT (1+1)』雙產品工藝流程，
+    依 line_gen (1=一代線, 2=二代線) 讀取對應的生產工藝資料檔：
+    - 一代線 (line_gen=1): 讀取 DOC/SourceData.xlsx 中的『03SEC CT (2+2)』與『01SG CT (1+1)』
+    - 二代線 (line_gen=2): 讀取 DOC/SourceData2.xlsx 中的『2代-03SEC CT (2+2)』與『2代-01SG CT (1+1)』
     並於啟動時提供明確的載入提示與錯誤排除引導。
     """
+    is_gen2 = int(line_gen) == 2
+    target_filename = "SourceData2.xlsx" if is_gen2 else "SourceData.xlsx"
+    search_paths = EXCEL_PATHS_GEN2 if is_gen2 else EXCEL_PATHS
+    gen_label = "二代線" if is_gen2 else "一代線"
+
     print("=" * 88)
-    print("📂 [資料載入提示] 正在搜尋並讀取生產工藝資料檔 'SourceData.xlsx'，請稍候...")
+    print(f"📂 [資料載入提示] 正在搜尋並讀取【{gen_label}】生產工藝資料檔 '{target_filename}'，請稍候...")
     print("=" * 88)
 
     excel_path = None
-    for path in EXCEL_PATHS:
+    for path in search_paths:
         if os.path.exists(path):
             excel_path = path
             break
 
     if excel_path is None:
         print("\n" + "!" * 88)
-        print("❌ [錯誤警告：找不到工藝資料檔 SourceData.xlsx]")
+        print(f"❌ [錯誤警告：找不到【{gen_label}】工藝資料檔 {target_filename}]")
         print("系統在以下預設路徑均未搜尋到檔案：")
-        for idx, p in enumerate(EXCEL_PATHS, 1):
+        for idx, p in enumerate(search_paths, 1):
             abs_p = os.path.abspath(p)
             print(f"   {idx}. {p} (絕對路徑: {abs_p})")
         print("\n【操作人員除錯建議】")
-        print("  1. 請確認 'SourceData.xlsx' 是否已正確放置於程式或執行檔所在目錄的 'DOC\\' 子資料夾中。")
-        print("  2. 若檔案名稱大小寫不同或被更名，請更正為 'SourceData.xlsx'。")
+        print(f"  1. 請確認 '{target_filename}' 是否已正確放置於程式或執行檔所在目錄的 'DOC\\' 子資料夾中。")
+        print(f"  2. 若檔案名稱大小寫不同或被更名，請更正為 '{target_filename}'。")
         print("  3. 若該檔案目前正被 Microsoft Excel 開啟編輯中，請存檔並關閉，避免檔案讀取鎖定衝突。")
         print("!" * 88 + "\n")
         print("[系統提示] 本次將暫時切換至內建雙產品 Mock Data 進行展示運算。\n")
         return get_mock_dual_product_data(ratio_03sec, ratio_01sg, run_pct, work_hours)
 
     abs_excel_path = os.path.abspath(excel_path)
-    print(f"🔍 [檔案定位成功] 找到工藝資料檔: {abs_excel_path}")
+    print(f"🔍 [檔案定位成功] 找到【{gen_label}】工藝資料檔: {abs_excel_path}")
     print("   正在解析產品工藝流程與可用機台配置表...")
 
     try:
         xl = pd.ExcelFile(excel_path)
-        routing_03sec = parse_product_routing_sheet(xl, "03SEC CT (2+2)", "03SEC")
-        routing_01sg = parse_product_routing_sheet(xl, "01SG CT (1+1)", "01SG")
+        if is_gen2:
+            routing_03sec = parse_product_routing_sheet_gen2(xl, "2代-03SEC CT (2+2)", "03SEC")
+            routing_01sg = parse_product_routing_sheet_gen2(xl, "2代-01SG CT (1+1)", "01SG")
+        else:
+            routing_03sec = parse_product_routing_sheet(xl, "03SEC CT (2+2)", "03SEC")
+            routing_01sg = parse_product_routing_sheet(xl, "01SG CT (1+1)", "01SG")
 
         if routing_03sec.empty or routing_01sg.empty:
             print(f"⚠️ [資料警告] '{excel_path}' 中的工藝工作表內容為空，將切換至內建 Mock Data。")
@@ -441,11 +597,14 @@ def load_process_data(
         routing_03sec["station_name"] = routing_03sec["station_key"].map(key_to_name)
         routing_01sg["station_name"] = routing_01sg["station_key"].map(key_to_name)
 
+        db_03_ct = float(routing_03sec[routing_03sec["station_key"].str.contains("D/B-IC")]["ct"].sum())
+        db_01_ct = float(routing_01sg[routing_01sg["station_key"].str.contains("D/B-IC")]["ct"].sum())
+
         print(
-            f"✅ [資料載入成功] 已從 '{excel_path}' 載入雙產品全線工藝：\n"
-            f"  • 03SEC (2+2 疊構) : 共 {len(routing_03sec)} 道有效工序 (D/B C/T = 170.50 min/lot)\n"
-            f"  • 01SG  (1+1 疊構) : 共 {len(routing_01sg)} 道有效工序 (D/B C/T = 118.98 min/lot)\n"
-            f"  • 整合共用設備站點 : 共 {len(stations_df)} 個核心站點 (含 02. D/B-IC D/B 完整納入計算)\n"
+            f"✅ [資料載入成功] 已從 '{excel_path}' 載入【{gen_label}】雙產品全線工藝：\n"
+            f"  • 03SEC (2+2 疊構) : 共 {len(routing_03sec)} 道有效工序 (D/B C/T = {db_03_ct:.2f} min/lot)\n"
+            f"  • 01SG  (1+1 疊構) : 共 {len(routing_01sg)} 道有效工序 (D/B C/T = {db_01_ct:.2f} min/lot)\n"
+            f"  • 整合共用設備站點 : 共 {len(stations_df)} 個核心站點 (含 D/B-IC D/B 完整納入計算)\n"
         )
         return stations_df, {"03SEC": routing_03sec, "01SG": routing_01sg}
 
@@ -481,6 +640,7 @@ class ProductionLineSimulator:
         sim_duration: float = SIM_DURATION,
         warmup_duration: float = WARMUP_DURATION,
         monitor_interval: float = MONITOR_INTERVAL,
+        line_gen: int = DEFAULT_LINE_GEN,
     ):
         self.stations_df = stations_df.copy().reset_index(drop=True)
         self.routings = routings
@@ -491,6 +651,7 @@ class ProductionLineSimulator:
         self.run_pct = float(run_pct)
         self.run_rate = max(0.05, min(1.0, self.run_pct / 100.0))
         self.transfer_min = max(0.0, float(transfer_min))
+        self.line_gen = int(line_gen)
 
         # 每天生產分鐘數 (預設 60 * 20 = 1200 分鐘) 與 每天每台設備實際生產時間 (預設 60 * 20 * 0.8 = 960 分鐘)
         self.daily_work_mins = 60.0 * self.work_hours
@@ -635,10 +796,12 @@ class ProductionLineSimulator:
         啟動模擬並回傳歷史紀錄表。
         """
         db_row = self.stations_df[self.stations_df["station_key"].str.contains("D/B-IC")].iloc[0]
+        gen_label = "二代線" if self.line_gen == 2 else "一代線"
 
         print("=" * 88)
-        print("🚀 啟動【03SEC & 01SG 全線多站點混線動態模擬器 (含每日工時、機台 RUN% & 人員搬送)】")
+        print(f"🚀 啟動【{gen_label}｜03SEC & 01SG 全線多站點混線動態模擬器 (含每日工時、機台 RUN% & 人員搬送)】")
         print("=" * 88)
+        print(f"  • 模擬產線世代          : {gen_label} ({'SourceData2.xlsx' if self.line_gen == 2 else 'SourceData.xlsx'})")
         print(f"  • 每日投入總批數        : {self.daily_lots:.1f} Lots / 天")
         print(f"  • 產品混線比例設定      : 03SEC : 01SG = {self.ratio_03sec*100:.0f}% : {self.ratio_01sg*100:.0f}%")
         print(
@@ -650,7 +813,7 @@ class ProductionLineSimulator:
             f"{'(不計搬送時間)' if self.transfer_min == 0 else '(已啟用跨站人員推車搬送延遲)'}"
         )
         print(
-            f"  • 02. D/B-IC D/B 站點   : 混線平均 C/T = {db_row['ct']:.2f}m | 5台並聯 -> "
+            f"  • {db_row['station_name']} : 混線平均 C/T = {db_row['ct']:.2f}m | {int(db_row['capacity'])}台並聯 -> "
             f"每日最大產能 {db_row['daily_max_lots']:.1f} Lots/天"
         )
         print(
@@ -861,6 +1024,7 @@ def generate_summary_and_station_charts(
     transfer_min: float,
     top_n: int = DEFAULT_TOP_N,
     show_windows: bool = True,
+    line_gen: int = DEFAULT_LINE_GEN,
 ) -> List[str]:
     """
     產生並儲存：
@@ -873,6 +1037,7 @@ def generate_summary_and_station_charts(
        - 紅色虛線：在警戒 WIP 數 (WIP_ALERT_THRESHOLD) 處畫出醒目紅色虛線
     """
     setup_chinese_font()
+    gen_label = "二代線" if int(line_gen) == 2 else "一代線"
     run_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     run_output_dir = os.path.join(OUTPUT_CHART_DIR, run_timestamp)
     os.makedirs(run_output_dir, exist_ok=True)
@@ -907,7 +1072,7 @@ def generate_summary_and_station_charts(
     gs_bot = outer_gs[1].subgridspec(1, 2, width_ratios=[1.0, 1.0], wspace=0.62)
 
     fig_sum.suptitle(
-        f"【03SEC & 01SG 產線模擬總結報告】日投: {int(daily_lots)} Lots | 混線 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
+        f"【{gen_label}｜03SEC & 01SG 產線模擬總結報告】日投: {int(daily_lots)} Lots | 混線 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
         f"每日生產: 60×{work_hours:.0f}h×{run_pct:.0f}% = {daily_equip_mins:.0f}m | 跨站搬送: {transfer_min:.1f}m",
         fontsize=14.5,
         fontweight="bold",
@@ -1146,7 +1311,7 @@ def generate_summary_and_station_charts(
         ax_st.set_xlabel("模擬時間 (Time)", fontsize=11, fontweight="bold", color="#1A202C", labelpad=8)
         ax_st.set_ylabel("等待中 LOT 數量 (Queue Lots)", fontsize=11, fontweight="bold", color="#1A202C", labelpad=8)
         ax_st.set_title(
-            f"【Top {idx+1} 瓶頸站點等待中 Queue 趨勢分析圖】{st_name}\n"
+            f"【{gen_label}｜Top {idx+1} 瓶頸站點等待中 Queue 趨勢分析圖】{st_name}\n"
             f"(機台數: {int(row['capacity'])} 台 | 混線加權 C/T: {row['ct']:.1f}m | 每日最大產能: {row['daily_max_lots']:.1f} Lots/天 | "
             f"最高排隊: {max_q} / 平均排隊: {avg_q:.2f} / 總WIP峰值: {max_w})",
             fontsize=12,
@@ -1202,11 +1367,13 @@ def create_and_show_animation(
     transfer_min: float,
     interarrival_time: float,
     top_n: int = DEFAULT_TOP_N,
+    line_gen: int = DEFAULT_LINE_GEN,
 ):
     """
     利用歷史紀錄表與 matplotlib.animation.FuncAnimation 製作高階主管動態簡報圖表。
     """
     setup_chinese_font()
+    gen_label = "二代線" if int(line_gen) == 2 else "一代線"
 
     station_names = stations_df["station_name"].tolist()
     queue_cols = [f"{name}__queue" for name in station_names]
@@ -1273,7 +1440,7 @@ def create_and_show_animation(
     ]
 
     fig.suptitle(
-        f"【03SEC & 01SG 動態模擬】日投: {int(daily_lots)} Lots | 比例 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
+        f"【{gen_label}｜03SEC & 01SG 動態模擬】日投: {int(daily_lots)} Lots | 比例 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
         f"每日生產: 60×{work_hours:.0f}h×{run_pct:.0f}% = {daily_equip_mins:.0f} min/天 | 跨站搬送: {transfer_min:.1f}m",
         fontsize=13,
         fontweight="bold",
@@ -1428,18 +1595,35 @@ def parse_sim_mode(mode_str: Optional[str]) -> str:
     return "dynamic"
 
 
-def get_simulation_parameters() -> Tuple[str, float, float, float, float, float, float, int]:
+def parse_line_gen(gen_str: Optional[str]) -> int:
+    """解析模擬產線世代 (1=一代線, 2=二代線)。"""
+    if gen_str is None:
+        return DEFAULT_LINE_GEN
+    s = str(gen_str).strip().lower()
+    if s in ("2", "gen2", "二代", "二代線", "2代", "2代線"):
+        return 2
+    return 1
+
+
+def get_simulation_parameters() -> Tuple[int, str, float, float, float, float, float, float, int]:
     """
-    開放讓使用者透過命令列參數或互動式輸入設定七大核心參數：
-    0. 模擬模式開關 (--mode，'dynamic' 動態模擬 或 'static' 靜態模擬，預設 dynamic)
-    1. 每日投入 Lot 數量 (--lots，預設 23，建議 10~30)
+    開放讓使用者透過命令列參數或互動式輸入設定八大核心參數：
+    - 產線世代開關 (--line-gen，1: 一代線[SourceData.xlsx] 或 2: 二代線[SourceData2.xlsx]，預設 1)
+    0. 模擬模式開關 (--mode，'dynamic' 動態模擬 或 'static' 靜態模擬，預設 static)
+    1. 每日投入 Lot 數量 (--lots，預設 29，建議 10~35)
     2. 03SEC 與 01SG 混合比例 (--mix，預設 7:3)
     3. 每天生產時間 (小時) (--work-hours，預設 20 小時)
-    4. 機台 RUN% 稼動率 (--run-pct，預設 80%，故每天實際生產時間 = 60 * 20 * 0.8 = 960 分鐘)
-    5. 站與站之間人員搬送時間 (分鐘) (--transfer-min，預設 5.0 分鐘，0 代表不計)
+    4. 機台 RUN% 稼動率 (--run-pct，預設 83%)
+    5. 站與站之間人員搬送時間 (分鐘) (--transfer-min，預設 8.0 分鐘，0 代表不計)
     6. 顯示 Top N 瓶頸站點數量 (--top-n，預設 3)
     """
-    parser = argparse.ArgumentParser(description="03SEC & 01SG 全線多站點動態/靜態混線模擬器")
+    parser = argparse.ArgumentParser(description="03SEC & 01SG 全線多站點動態/靜態混線模擬器 (支援一代線與二代線)")
+    parser.add_argument(
+        "--line-gen",
+        type=str,
+        default=None,
+        help=f"設定模擬產線世代：'1' (一代線 SourceData.xlsx) 或 '2' (二代線 SourceData2.xlsx，預設: {DEFAULT_LINE_GEN})",
+    )
     parser.add_argument(
         "--mode",
         type=str,
@@ -1450,7 +1634,7 @@ def get_simulation_parameters() -> Tuple[str, float, float, float, float, float,
         "--lots",
         type=float,
         default=None,
-        help=f"設定每日投入總 Lot 數 (建議 10~30，預設: {DEFAULT_DAILY_LOTS})",
+        help=f"設定每日投入總 Lot 數 (建議 10~35，預設: {DEFAULT_DAILY_LOTS})",
     )
     parser.add_argument(
         "--mix",
@@ -1484,6 +1668,7 @@ def get_simulation_parameters() -> Tuple[str, float, float, float, float, float,
     )
     args, _ = parser.parse_known_args()
 
+    line_gen_raw = args.line_gen
     mode_raw = args.mode
     daily_lots = args.lots
     mix_str = args.mix
@@ -1499,16 +1684,23 @@ def get_simulation_parameters() -> Tuple[str, float, float, float, float, float,
         print("⚙️  【模擬參數設定】(直接按 Enter 可快速套用預設值)")
         print("=" * 80)
 
+        if line_gen_raw is None:
+            default_gen_label = "1: 一代線" if DEFAULT_LINE_GEN == 1 else "2: 二代線"
+            inp = input(
+                f"  0a. 請選擇模擬產線世代 (1: 一代線[SourceData.xlsx], 2: 二代線[SourceData2.xlsx]) [預設 {default_gen_label}]: "
+            ).strip()
+            line_gen_raw = inp if inp != "" else str(DEFAULT_LINE_GEN)
+
         if mode_raw is None:
             default_mode_label = "1: 動態模擬" if DEFAULT_SIM_MODE == "dynamic" else "2: 靜態模擬"
             inp = input(
-                f"  0. 請選擇模擬模式 (1: 動態模擬[動畫+總結+分析圖], 2: 靜態模擬[直接出總結+分析圖]) [預設 {default_mode_label}]: "
+                f"  0b. 請選擇模擬模式 (1: 動態模擬[動畫+總結+分析圖], 2: 靜態模擬[直接出總結+分析圖]) [預設 {default_mode_label}]: "
             ).strip()
             mode_raw = inp if inp != "" else DEFAULT_SIM_MODE
 
         if daily_lots is None:
             try:
-                inp = input(f"  1. 請輸入每日投入 Lot 總數 (建議 10~30) [預設 {DEFAULT_DAILY_LOTS}]: ").strip()
+                inp = input(f"  1. 請輸入每日投入 Lot 總數 (建議 10~35) [預設 {DEFAULT_DAILY_LOTS}]: ").strip()
                 daily_lots = float(inp) if inp != "" else float(DEFAULT_DAILY_LOTS)
             except Exception:
                 daily_lots = float(DEFAULT_DAILY_LOTS)
@@ -1531,7 +1723,7 @@ def get_simulation_parameters() -> Tuple[str, float, float, float, float, float,
             try:
                 inp = input(
                     f"  4. 請輸入機台 RUN% 正常運作百分比 (預設 {DEFAULT_RUN_PCT}% -> 每天實際生產 "
-                    f"60*{work_hours:.0f}*0.8={60*work_hours*0.8:.0f}m): "
+                    f"60*{work_hours:.0f}*{DEFAULT_RUN_PCT/100:.2f}={60*work_hours*(DEFAULT_RUN_PCT/100):.0f}m): "
                 ).strip()
                 inp = inp.replace("%", "").strip()
                 run_pct = float(inp) if inp != "" else float(DEFAULT_RUN_PCT)
@@ -1554,6 +1746,7 @@ def get_simulation_parameters() -> Tuple[str, float, float, float, float, float,
             except Exception:
                 top_n = int(DEFAULT_TOP_N)
 
+    line_gen = parse_line_gen(line_gen_raw)
     sim_mode = parse_sim_mode(mode_raw)
     if daily_lots is None or daily_lots <= 0:
         daily_lots = float(DEFAULT_DAILY_LOTS)
@@ -1569,18 +1762,19 @@ def get_simulation_parameters() -> Tuple[str, float, float, float, float, float,
         top_n = int(DEFAULT_TOP_N)
 
     ratio_03sec, ratio_01sg = parse_mix_ratio(mix_str)
-    return sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n
+    return line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n
 
 
 def reload_config_globals():
     """重新讀取 config.ini 並刷新全域預設值，支援即時修改即時套用。"""
-    global DEFAULT_SIM_MODE, DEFAULT_DAILY_LOTS, DEFAULT_MIX_RATIO_STR, DEFAULT_WORK_HOURS
+    global DEFAULT_LINE_GEN, DEFAULT_SIM_MODE, DEFAULT_DAILY_LOTS, DEFAULT_MIX_RATIO_STR, DEFAULT_WORK_HOURS
     global DEFAULT_RUN_PCT, DEFAULT_TRANSFER_MIN, DEFAULT_TOP_N, SIM_DURATION, WARMUP_DURATION
     global MONITOR_INTERVAL, WIP_ALERT_THRESHOLD
 
     cfg = load_or_create_config(CONFIG_PATH)
     sim_sec = cfg["SIMULATION"] if "SIMULATION" in cfg else {}
 
+    DEFAULT_LINE_GEN = int(float(sim_sec.get("line_gen", 1)))
     DEFAULT_SIM_MODE = sim_sec.get("sim_mode", "static").strip().lower()
     DEFAULT_DAILY_LOTS = float(sim_sec.get("daily_lots", 29.0))
     DEFAULT_MIX_RATIO_STR = sim_sec.get("mix_ratio", "7:3").strip()
@@ -1604,13 +1798,13 @@ def main():
         # 每輪開始前重新載入 config.ini，確保外部修改隨時生效
         reload_config_globals()
 
-        # Step 1: 取得使用者設定的模擬參數 (含動態/靜態模擬開關)
+        # Step 1: 取得使用者設定的模擬參數 (含產線世代與動態/靜態模擬開關)
         if last_params is not None and not is_headless:
             # 延續上一輪的選項選擇
             use_same = False
             print("\n" + "=" * 88)
             print(f"🔄 【第 {round_count} 輪模擬準備】請選擇參數設定方式：")
-            print("   [1] 重新輸入 / 確認參數 (可調整數值或讀取最新 config.ini / Excel)")
+            print("   [1] 重新輸入 / 確認參數 (可切換一代線/二代線或調整數值、讀取最新 config.ini / Excel)")
             print("   [2] 使用上一輪相同參數直接快速執行")
             print("   [0] 結束並退出程式")
             print("=" * 88)
@@ -1627,18 +1821,19 @@ def main():
                 use_same = True
 
             if use_same:
-                sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = last_params
+                line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = last_params
             else:
-                sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
+                line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
                     get_simulation_parameters()
                 )
         else:
-            sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
+            line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
                 get_simulation_parameters()
             )
 
-        last_params = (sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n)
+        last_params = (line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n)
         daily_equip_mins = 60.0 * work_hours * (run_pct / 100.0)
+        gen_label = "二代線" if line_gen == 2 else "一代線"
 
         # Step 2: 讀取 03SEC 與 01SG 雙產品 Excel 工藝流程並計算混線加權 C/T 與每日實際產能
         stations_df, routings = load_process_data(
@@ -1646,10 +1841,11 @@ def main():
             ratio_01sg=ratio_01sg,
             run_pct=run_pct,
             work_hours=work_hours,
+            line_gen=line_gen,
         )
 
         print(
-            f"\n【03SEC ({ratio_03sec*100:.0f}%) & 01SG ({ratio_01sg*100:.0f}%) 全線站點負荷總覽 "
+            f"\n【{gen_label}｜03SEC ({ratio_03sec*100:.0f}%) & 01SG ({ratio_01sg*100:.0f}%) 全線站點負荷總覽 "
             f"(模式: {'動態模擬' if sim_mode == 'dynamic' else '靜態模擬'} | "
             f"每日設備實際生產時間 = 60×{work_hours:.0f}×{run_pct/100:.2f} = {daily_equip_mins:.0f} 分鐘/台)】"
         )
@@ -1689,6 +1885,7 @@ def main():
             sim_duration=SIM_DURATION,
             warmup_duration=WARMUP_DURATION,
             monitor_interval=MONITOR_INTERVAL,
+            line_gen=line_gen,
         )
         history_df = simulator.run()
 
@@ -1710,6 +1907,7 @@ def main():
                 transfer_min=transfer_min,
                 interarrival_time=simulator.interarrival_time,
                 top_n=top_n,
+                line_gen=line_gen,
             )
 
         # 5B. 產生「模擬總結圖」與「Top N 瓶頸站點折線分析圖 (一個一張 + 警戒紅虛線)」
@@ -1726,6 +1924,7 @@ def main():
             transfer_min=transfer_min,
             top_n=top_n,
             show_windows=(not is_headless),
+            line_gen=line_gen,
         )
 
         # 徹底釋放圖表記憶體資源
