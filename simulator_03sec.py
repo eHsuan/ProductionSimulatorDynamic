@@ -1017,9 +1017,9 @@ def generate_summary_and_station_charts(
     line_gen: int = DEFAULT_LINE_GEN,
 ) -> List[str]:
     """
-    產生並儲存模擬總結圖 (Summary Dashboard)：
-    - 上方區塊：【全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)】
-    - 下方主區塊：【等待中 LOT 數最高峰 (Peak Queue)】全站點排行圖 (直接顯示所有站點，不再產生個別單站折線圖)
+    產生並儲存兩張獨立的模擬總結圖：
+    1. 01_Peak_Queue_All_Stations.png：【等待中 LOT 數最高峰 (Peak Queue)】全站點排行圖 (由高到低排列)
+    2. 02_WIP_Transfer_Summary_Table.png：【全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)】
     """
     setup_chinese_font()
     gen_label = "二代線" if int(line_gen) == 2 else "一代線"
@@ -1029,87 +1029,40 @@ def generate_summary_and_station_charts(
     saved_files: List[str] = []
 
     daily_equip_mins = 60.0 * work_hours * (run_pct / 100.0)
-    num_all_stations = len(ranked_queue_peak_df)
-
-    # --------------------------------------------------------------------------
-    # 產線模擬總結圖 (Summary Dashboard)：上方統計總表 + 下方全站點等待中 LOT 數最高峰主圖
-    # --------------------------------------------------------------------------
-    fig_height = max(12.5, 3.8 + 0.36 * num_all_stations)
-    bottom_ratio = max(3.5, 0.16 * num_all_stations)
-    fig_sum = plt.figure(figsize=(16.5, fig_height), dpi=100)
-    fig_sum.patch.set_facecolor("#F8F9FA")
-
-    outer_gs = fig_sum.add_gridspec(
-        2, 1,
-        height_ratios=[1.0, bottom_ratio],
-        hspace=0.18,
-        left=0.26,
-        right=0.96,
-        top=0.92,
-        bottom=0.05,
+    header_info = (
+        f"【{gen_label}｜03SEC & 01SG 產線模擬總結報告】日投: {int(daily_lots)} Lots | 混線 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
+        f"每日生產: 60×{work_hours:.0f}h×{run_pct:.0f}% = {daily_equip_mins:.0f}m | 跨站搬送: {transfer_min:.1f}m"
     )
 
-    fig_sum.suptitle(
-        f"【{gen_label}｜03SEC & 01SG 產線模擬總結報告】日投: {int(daily_lots)} Lots | 混線 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
-        f"每日生產: 60×{work_hours:.0f}h×{run_pct:.0f}% = {daily_equip_mins:.0f}m | 跨站搬送: {transfer_min:.1f}m",
-        fontsize=14.5,
+    # 確保依據「等待中 LOT 數最高峰 (max_queue)」由高到低排列
+    sub_q_peak = (
+        ranked_queue_peak_df.sort_values(
+            by=["max_queue", "avg_queue", "max_wip", "avg_wip"],
+            ascending=[False, False, False, False],
+        )
+        .reset_index(drop=True)
+        .copy()
+    )
+    num_all_stations = len(sub_q_peak)
+
+    # --------------------------------------------------------------------------
+    # 圖表 1：所有站點的等待中 LOT 數最高峰排行圖 (由高到低排列)
+    # --------------------------------------------------------------------------
+    fig_q_height = max(9.5, 2.2 + 0.36 * num_all_stations)
+    fig_queue, ax_avg = plt.subplots(figsize=(16.5, fig_q_height), dpi=100)
+    fig_queue.patch.set_facecolor("#F8F9FA")
+    ax_avg.set_facecolor("#FFFFFF")
+    fig_queue.subplots_adjust(left=0.26, right=0.96, top=0.90, bottom=0.07)
+
+    fig_queue.suptitle(
+        header_info,
+        fontsize=14.0,
         fontweight="bold",
         color="#1A202C",
-        y=0.97,
+        y=0.965,
     )
 
-    # (1) 上方：全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)
-    ax_table = fig_sum.add_subplot(outer_gs[0])
-    ax_table.axis("off")
-
-    line_max, line_min, line_avg = int(history_df["total_line_wip"].max()), int(history_df["total_line_wip"].min()), float(history_df["total_line_wip"].mean())
-    st_max, st_min, st_avg = int(history_df["total_station_wip"].max()), int(history_df["total_station_wip"].min()), float(history_df["total_station_wip"].mean())
-    srv_max, srv_min, srv_avg = int(history_df["total_in_service"].max()), int(history_df["total_in_service"].min()), float(history_df["total_in_service"].mean())
-    q_max, q_min, q_avg = int(history_df["total_queue"].max()), int(history_df["total_queue"].min()), float(history_df["total_queue"].mean())
-    tr_max, tr_min, tr_avg = int(history_df["in_transfer"].max()), int(history_df["in_transfer"].min()), float(history_df["in_transfer"].mean())
-
-    ax_table.set_title("全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)", fontsize=12.5, fontweight="bold", color="#2C5282", pad=8)
-
-    table_data = [
-        ["全站產線總 WIP (站點+搬送)", f"{line_max} Lots", f"{line_min} Lots", f"{line_avg:.2f} Lots"],
-        ["全站站點總 WIP (製程+等待)", f"{st_max} Lots", f"{st_min} Lots", f"{st_avg:.2f} Lots"],
-        ["  • 全站機台製程中 WIP", f"{srv_max} Lots", f"{srv_min} Lots", f"{srv_avg:.2f} Lots"],
-        ["  • 全站等待中 Queue", f"{q_max} Lots", f"{q_min} Lots", f"{q_avg:.2f} Lots"],
-        ["全站人員搬送中 Lot 數", f"{tr_max} Lots", f"{tr_min} Lots", f"{tr_avg:.2f} Lots"],
-    ]
-    col_labels = ["統計項目", "最高 (Max)", "最低 (Min)", "平均 (Avg)"]
-
-    tbl = ax_table.table(
-        cellText=table_data,
-        colLabels=col_labels,
-        colWidths=[0.43, 0.19, 0.19, 0.19],
-        loc="center",
-        cellLoc="center",
-        bbox=[0.0, 0.02, 1.0, 0.90],
-    )
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(10.0)
-    for (r_idx, c_idx), cell in tbl.get_celld().items():
-        cell.set_edgecolor("#CBD5E0")
-        cell.set_linewidth(1.0)
-        if r_idx == 0:
-            cell.set_facecolor("#2B6CB0")
-            cell.get_text().set_color("#FFFFFF")
-            cell.get_text().set_fontweight("bold")
-        elif r_idx == 1:
-            cell.set_facecolor("#EBF8FF")
-            cell.get_text().set_fontweight("bold")
-        elif r_idx == 5:
-            cell.set_facecolor("#FEFCBF")
-            cell.get_text().set_fontweight("bold")
-        else:
-            cell.set_facecolor("#FFFFFF")
-
-    # (2) 下方主圖：【等待中 LOT 數最高峰 (Peak Queue)】全站點排行圖
-    ax_avg = fig_sum.add_subplot(outer_gs[1])
-    ax_avg.set_facecolor("#FFFFFF")
-    sub_q_peak = ranked_queue_peak_df.copy()
-    y_a = np.arange(len(sub_q_peak))
+    y_a = np.arange(num_all_stations)
     max_queue_vals = sub_q_peak["max_queue"].values.astype(float)
     queue_colors = ["#E53E3E" if v >= WIP_ALERT_THRESHOLD else "#2B6CB0" for v in max_queue_vals]
 
@@ -1123,11 +1076,11 @@ def generate_summary_and_station_charts(
     ax_avg.set_xlim(0, x_limit_avg)
     ax_avg.set_xlabel("等待中 LOT 數最高峰 (Peak Queue Lots)", fontsize=10.5, fontweight="bold")
     ax_avg.set_title(
-        f"【等待中 LOT 數最高峰 (Peak Queue)】全線各站點排行總覽 (共 {num_all_stations} 站)",
+        f"【等待中 LOT 數最高峰 (Peak Queue)】全線各站點排行總覽 (由高到低排列，共 {num_all_stations} 站)",
         fontsize=12.5,
         fontweight="bold",
         color="#2C5282",
-        pad=10,
+        pad=12,
     )
     ax_avg.grid(axis="x", linestyle=":", alpha=0.6)
     for i, (q_val, avg_q, q_time, max_w, cap_v, d_max) in enumerate(
@@ -1153,20 +1106,90 @@ def generate_summary_and_station_charts(
         )
     ax_avg.legend(loc="lower right", fontsize=9.5, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
 
-    summary_path = os.path.join(run_output_dir, "00_Summary_Dashboard.png")
-    fig_sum.savefig(summary_path, dpi=130, bbox_inches="tight", pad_inches=0.25)
-    saved_files.append(summary_path)
+    queue_chart_path = os.path.join(run_output_dir, "01_Peak_Queue_All_Stations.png")
+    fig_queue.savefig(queue_chart_path, dpi=130, bbox_inches="tight", pad_inches=0.25)
+    saved_files.append(queue_chart_path)
+
+    # --------------------------------------------------------------------------
+    # 圖表 2：全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)
+    # --------------------------------------------------------------------------
+    fig_tbl, ax_table = plt.subplots(figsize=(12.5, 4.8), dpi=100)
+    fig_tbl.patch.set_facecolor("#F8F9FA")
+    ax_table.axis("off")
+    fig_tbl.subplots_adjust(left=0.06, right=0.94, top=0.78, bottom=0.08)
+
+    fig_tbl.suptitle(
+        header_info,
+        fontsize=13.0,
+        fontweight="bold",
+        color="#1A202C",
+        y=0.94,
+    )
+
+    line_max, line_min, line_avg = int(history_df["total_line_wip"].max()), int(history_df["total_line_wip"].min()), float(history_df["total_line_wip"].mean())
+    st_max, st_min, st_avg = int(history_df["total_station_wip"].max()), int(history_df["total_station_wip"].min()), float(history_df["total_station_wip"].mean())
+    srv_max, srv_min, srv_avg = int(history_df["total_in_service"].max()), int(history_df["total_in_service"].min()), float(history_df["total_in_service"].mean())
+    q_max, q_min, q_avg = int(history_df["total_queue"].max()), int(history_df["total_queue"].min()), float(history_df["total_queue"].mean())
+    tr_max, tr_min, tr_avg = int(history_df["in_transfer"].max()), int(history_df["in_transfer"].min()), float(history_df["in_transfer"].mean())
+
+    ax_table.set_title(
+        "【全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)】",
+        fontsize=12.5,
+        fontweight="bold",
+        color="#2C5282",
+        pad=12,
+    )
+
+    table_data = [
+        ["全站產線總 WIP (站點+搬送)", f"{line_max} Lots", f"{line_min} Lots", f"{line_avg:.2f} Lots"],
+        ["全站站點總 WIP (製程+等待)", f"{st_max} Lots", f"{st_min} Lots", f"{st_avg:.2f} Lots"],
+        ["  • 全站機台製程中 WIP", f"{srv_max} Lots", f"{srv_min} Lots", f"{srv_avg:.2f} Lots"],
+        ["  • 全站等待中 Queue", f"{q_max} Lots", f"{q_min} Lots", f"{q_avg:.2f} Lots"],
+        ["全站人員搬送中 Lot 數", f"{tr_max} Lots", f"{tr_min} Lots", f"{tr_avg:.2f} Lots"],
+    ]
+    col_labels = ["統計項目", "最高 (Max)", "最低 (Min)", "平均 (Avg)"]
+
+    tbl = ax_table.table(
+        cellText=table_data,
+        colLabels=col_labels,
+        colWidths=[0.43, 0.19, 0.19, 0.19],
+        loc="center",
+        cellLoc="center",
+        bbox=[0.0, 0.02, 1.0, 0.90],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(11.0)
+    for (r_idx, c_idx), cell in tbl.get_celld().items():
+        cell.set_edgecolor("#CBD5E0")
+        cell.set_linewidth(1.0)
+        if r_idx == 0:
+            cell.set_facecolor("#2B6CB0")
+            cell.get_text().set_color("#FFFFFF")
+            cell.get_text().set_fontweight("bold")
+        elif r_idx == 1:
+            cell.set_facecolor("#EBF8FF")
+            cell.get_text().set_fontweight("bold")
+        elif r_idx == 5:
+            cell.set_facecolor("#FEFCBF")
+            cell.get_text().set_fontweight("bold")
+        else:
+            cell.set_facecolor("#FFFFFF")
+
+    table_chart_path = os.path.join(run_output_dir, "02_WIP_Transfer_Summary_Table.png")
+    fig_tbl.savefig(table_chart_path, dpi=130, bbox_inches="tight", pad_inches=0.25)
+    saved_files.append(table_chart_path)
 
     if not show_windows:
-        plt.close(fig_sum)
+        plt.close(fig_queue)
+        plt.close(fig_tbl)
 
-    print(f"📊 [圖表產生完成] 已自動生成全站點總結報告圖，並儲存至 '{run_output_dir}/' 資料夾：")
+    print(f"📊 [圖表產生完成] 已自動生成 2 張總結報告圖，並儲存至 '{run_output_dir}/' 資料夾：")
     for fpath in saved_files:
         print(f"   • {fpath}")
     print()
 
     if show_windows:
-        print("[視覺化啟動] 正在開啟【全站點模擬總結圖】視窗...")
+        print("[視覺化啟動] 正在開啟 2 張【產線模擬總結圖】視窗...")
         plt.show()
 
     return saved_files
