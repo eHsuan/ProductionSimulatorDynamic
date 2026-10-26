@@ -939,26 +939,15 @@ def analyze_bottlenecks(
     print(f"  • 全站人員搬送中 Lot 數        : 最高 {tr_max:3d} Lots  |  最低 {tr_min:3d} Lots  |  平均 {tr_avg:6.2f} Lots")
     print("=" * 80 + "\n")
 
-    display_n = max(1, min(int(top_n), len(ranked_queue_peak_df)))
-    print(f"=== 全線【等待中 LOT 數最高峰 (Peak Queue)】Top {display_n} 站點名單 ===")
+    display_n = len(ranked_queue_peak_df)
+    print(f"=== 全線【等待中 LOT 數最高峰 (Peak Queue)】全站點排行名單 (共 {display_n} 站) ===")
     for idx in range(display_n):
         row = ranked_queue_peak_df.iloc[idx]
         peak_q_t_str = format_sim_time(row["peak_queue_time"])
         print(
-            f"{idx + 1}. {row['station_name']} - "
+            f"{idx + 1:2d}. {row['station_name']} - "
             f"最高排隊: {int(row['max_queue'])} Lots (發生於 {peak_q_t_str}, 平均排隊: {row['avg_queue']:.2f}, 站點總WIP峰值: {int(row['max_wip'])}) - "
             f"C/T: {row['ct']:.2f} min/lot (機台數: {int(row['capacity'])}, 每日上限: {row['daily_max_lots']:.1f} Lots/天)"
-        )
-    print("=" * 80 + "\n")
-
-    print(f"=== 全線【WIP 最高峰 (Peak WIP)】Top {display_n} 站點名單 ===")
-    for idx in range(display_n):
-        row = ranked_peak_df.iloc[idx]
-        peak_t_str = format_sim_time(row["peak_time"])
-        print(
-            f"{idx + 1}. {row['station_name']} - "
-            f"最高峰 WIP: {int(row['max_wip'])} Lots (發生於 {peak_t_str}, 最大排隊: {int(row['max_queue'])}, 平均 WIP: {row['avg_wip']:.2f}) - "
-            f"每日上限: {row['daily_max_lots']:.1f} Lots/天"
         )
     print("=" * 80 + "\n")
 
@@ -1028,14 +1017,9 @@ def generate_summary_and_station_charts(
     line_gen: int = DEFAULT_LINE_GEN,
 ) -> List[str]:
     """
-    產生並儲存：
-    1. 模擬總結圖 (Summary Dashboard)：
-       - 產線總 WIP、站點 WIP、人員搬送 Lot 的【最高 / 最低 / 平均】統計表與全期趨勢圖
-       - 【WIP 最高峰 Top N 名單】與【平均 WIP Top N 名單】橫向對照圖
-    2. Top N 站點個別折線分析圖 (一個站點一張圖)：
-       - Y 軸：WIP 數 (含該站總 WIP 實線與等待中 Queue 虛線)
-       - X 軸：模擬時間
-       - 紅色虛線：在警戒 WIP 數 (WIP_ALERT_THRESHOLD) 處畫出醒目紅色虛線
+    產生並儲存模擬總結圖 (Summary Dashboard)：
+    - 上方區塊：【全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)】
+    - 下方主區塊：【等待中 LOT 數最高峰 (Peak Queue)】全站點排行圖 (直接顯示所有站點，不再產生個別單站折線圖)
     """
     setup_chinese_font()
     gen_label = "二代線" if int(line_gen) == 2 else "一代線"
@@ -1044,33 +1028,26 @@ def generate_summary_and_station_charts(
     os.makedirs(run_output_dir, exist_ok=True)
     saved_files: List[str] = []
 
-    times = history_df["time"].values.astype(float)
-    tick_vals_full, tick_labels_full = build_time_axis_ticks(times, max_ticks=8)
-    tick_vals_sub, tick_labels_sub = build_time_axis_ticks(times, max_ticks=5)
     daily_equip_mins = 60.0 * work_hours * (run_pct / 100.0)
-    display_n = max(1, min(int(top_n), len(ranked_peak_df)))
+    num_all_stations = len(ranked_queue_peak_df)
 
     # --------------------------------------------------------------------------
-    # 圖表 A：產線模擬總結圖 (Summary Dashboard)
+    # 產線模擬總結圖 (Summary Dashboard)：上方統計總表 + 下方全站點等待中 LOT 數最高峰主圖
     # --------------------------------------------------------------------------
-    # 根據 display_n 動態調整畫布高度，並將上下兩列分別設定適合的 wspace，徹底消除左右重疊
-    bottom_height_ratio = max(1.15, 0.25 * display_n)
-    fig_height = max(10.0, 5.2 + 0.95 * display_n)
-    fig_sum = plt.figure(figsize=(18.5, fig_height), dpi=100)
+    fig_height = max(12.5, 3.8 + 0.36 * num_all_stations)
+    bottom_ratio = max(3.5, 0.16 * num_all_stations)
+    fig_sum = plt.figure(figsize=(16.5, fig_height), dpi=100)
     fig_sum.patch.set_facecolor("#F8F9FA")
 
     outer_gs = fig_sum.add_gridspec(
         2, 1,
-        height_ratios=[1.05, bottom_height_ratio],
-        hspace=0.38,
-        left=0.18,
-        right=0.97,
-        top=0.89,
-        bottom=0.08,
+        height_ratios=[1.0, bottom_ratio],
+        hspace=0.18,
+        left=0.26,
+        right=0.96,
+        top=0.92,
+        bottom=0.05,
     )
-    gs_top = outer_gs[0].subgridspec(1, 2, width_ratios=[1.05, 1.05], wspace=0.22)
-    # 下方兩個橫向柱狀圖的 Y 軸有長站點名稱，因此將 wspace 設為 0.62 預留充足空間，絕不重疊
-    gs_bot = outer_gs[1].subgridspec(1, 2, width_ratios=[1.0, 1.0], wspace=0.62)
 
     fig_sum.suptitle(
         f"【{gen_label}｜03SEC & 01SG 產線模擬總結報告】日投: {int(daily_lots)} Lots | 混線 {ratio_03sec*100:.0f}:{ratio_01sg*100:.0f} | "
@@ -1078,25 +1055,11 @@ def generate_summary_and_station_charts(
         fontsize=14.5,
         fontweight="bold",
         color="#1A202C",
-        y=0.96,
+        y=0.97,
     )
 
-    # (A-1) 左上：全線產線總 WIP、站點 WIP 與人員搬送 Lot 時間趨勢圖
-    ax_trend = fig_sum.add_subplot(gs_top[0, 0])
-    ax_trend.set_facecolor("#FFFFFF")
-    ax_trend.plot(times, history_df["total_line_wip"], color="#1A365D", linewidth=2.2, label="產線總 WIP (站點+搬送)")
-    ax_trend.plot(times, history_df["total_station_wip"], color="#2B6CB0", linewidth=1.8, linestyle="--", label="站點總 WIP (製程+等待)")
-    ax_trend.plot(times, history_df["in_transfer"], color="#D69E2E", linewidth=1.6, label="人員搬送中 Lot 數")
-    ax_trend.fill_between(times, history_df["total_station_wip"], history_df["total_line_wip"], color="#FEFCBF", alpha=0.5)
-    ax_trend.set_title("全線產線總 WIP vs 站點 WIP vs 人員搬送 Lot 趨勢", fontsize=11.5, fontweight="bold", color="#2C5282", pad=10)
-    ax_trend.set_ylabel("Lot 數量", fontsize=10, fontweight="bold")
-    ax_trend.set_xticks(tick_vals_sub)
-    ax_trend.set_xticklabels(tick_labels_sub, fontsize=8.5)
-    ax_trend.grid(True, linestyle=":", alpha=0.6)
-    ax_trend.legend(loc="upper left", fontsize=8.5, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
-
-    # (A-2) 右上：產線 WIP 與人員搬送 Lot 的【最高 / 最低 / 平均】統計表格
-    ax_table = fig_sum.add_subplot(gs_top[0, 1])
+    # (1) 上方：全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)
+    ax_table = fig_sum.add_subplot(outer_gs[0])
     ax_table.axis("off")
 
     line_max, line_min, line_avg = int(history_df["total_line_wip"].max()), int(history_df["total_line_wip"].min()), float(history_df["total_line_wip"].mean())
@@ -1105,7 +1068,7 @@ def generate_summary_and_station_charts(
     q_max, q_min, q_avg = int(history_df["total_queue"].max()), int(history_df["total_queue"].min()), float(history_df["total_queue"].mean())
     tr_max, tr_min, tr_avg = int(history_df["in_transfer"].max()), int(history_df["in_transfer"].min()), float(history_df["in_transfer"].mean())
 
-    ax_table.set_title("全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)", fontsize=11.5, fontweight="bold", color="#2C5282", pad=10)
+    ax_table.set_title("全站 WIP 與人員搬送 Lot 統計總表 (最高 / 最低 / 平均)", fontsize=12.5, fontweight="bold", color="#2C5282", pad=8)
 
     table_data = [
         ["全站產線總 WIP (站點+搬送)", f"{line_max} Lots", f"{line_min} Lots", f"{line_avg:.2f} Lots"],
@@ -1116,17 +1079,16 @@ def generate_summary_and_station_charts(
     ]
     col_labels = ["統計項目", "最高 (Max)", "最低 (Min)", "平均 (Avg)"]
 
-    # 明確配置第一欄寬度為 43%，後三欄各 19%，確保長中文字串絕不超出表格格線
     tbl = ax_table.table(
         cellText=table_data,
         colLabels=col_labels,
         colWidths=[0.43, 0.19, 0.19, 0.19],
         loc="center",
         cellLoc="center",
-        bbox=[0.0, 0.08, 1.0, 0.84],
+        bbox=[0.0, 0.02, 1.0, 0.90],
     )
     tbl.auto_set_font_size(False)
-    tbl.set_fontsize(9.5)
+    tbl.set_fontsize(10.0)
     for (r_idx, c_idx), cell in tbl.get_celld().items():
         cell.set_edgecolor("#CBD5E0")
         cell.set_linewidth(1.0)
@@ -1143,64 +1105,45 @@ def generate_summary_and_station_charts(
         else:
             cell.set_facecolor("#FFFFFF")
 
-    # (A-3) 左下：【WIP 最高峰 (Peak WIP)】Top N 站點排行圖
-    ax_peak = fig_sum.add_subplot(gs_bot[0, 0])
-    ax_peak.set_facecolor("#FFFFFF")
-    sub_peak = ranked_peak_df.iloc[:display_n].copy()
-    y_p = np.arange(len(sub_peak))
-    peak_vals = sub_peak["max_wip"].values.astype(float)
-    peak_colors = ["#E53E3E" if v >= WIP_ALERT_THRESHOLD else "#DD6B20" for v in peak_vals]
-
-    ax_peak.barh(y_p, peak_vals, height=0.58, color=peak_colors, edgecolor="#742A2A", alpha=0.9)
-    ax_peak.axvline(WIP_ALERT_THRESHOLD, color="#E53E3E", linestyle="--", linewidth=1.5, label=f"警戒線 ({WIP_ALERT_THRESHOLD} Lots)")
-    ax_peak.set_yticks(y_p)
-    ax_peak.set_yticklabels([f"Top {i+1}: {n}" for i, n in enumerate(sub_peak["station_name"])], fontsize=9, fontweight="bold")
-    ax_peak.invert_yaxis()
-    # 動態放大 X 軸上限 (預留 62% 空間放右側峰值與時間文字)，確保文字絕不超出右邊框線
-    max_p_val = float(np.max(peak_vals)) if len(peak_vals) > 0 else 10.0
-    x_limit_peak = max(X_AXIS_MAX * 1.35, WIP_ALERT_THRESHOLD * 1.45, max_p_val * 1.65 + 4.0)
-    ax_peak.set_xlim(0, x_limit_peak)
-    ax_peak.set_xlabel("最高峰 WIP 數 (Peak Lots)", fontsize=9.5, fontweight="bold")
-    ax_peak.set_title(f"【WIP 最高峰 (Peak WIP)】Top {display_n} 站點名單", fontsize=11.5, fontweight="bold", color="#9B2C2C", pad=10)
-    ax_peak.grid(axis="x", linestyle=":", alpha=0.6)
-    for i, (val, avg_v, p_t) in enumerate(zip(peak_vals, sub_peak["avg_wip"], sub_peak["peak_time"])):
-        ax_peak.text(
-            val + x_limit_peak * 0.015,
-            i,
-            f"峰值: {int(val)} Lots (平均: {avg_v:.1f} | {format_sim_time(p_t)})",
-            va="center",
-            ha="left",
-            fontsize=8.5,
-            fontweight="bold",
-            color="#1A202C",
-            clip_on=True,
-        )
-    ax_peak.legend(loc="lower right", fontsize=8.5, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
-
-    # (A-4) 右下：【等待中 LOT 數最高峰 (Peak Queue)】Top N 站點排行圖
-    ax_avg = fig_sum.add_subplot(gs_bot[0, 1])
+    # (2) 下方主圖：【等待中 LOT 數最高峰 (Peak Queue)】全站點排行圖
+    ax_avg = fig_sum.add_subplot(outer_gs[1])
     ax_avg.set_facecolor("#FFFFFF")
-    sub_q_peak = ranked_queue_peak_df.iloc[:display_n].copy()
+    sub_q_peak = ranked_queue_peak_df.copy()
     y_a = np.arange(len(sub_q_peak))
     max_queue_vals = sub_q_peak["max_queue"].values.astype(float)
     queue_colors = ["#E53E3E" if v >= WIP_ALERT_THRESHOLD else "#2B6CB0" for v in max_queue_vals]
 
-    ax_avg.barh(y_a, max_queue_vals, height=0.58, color=queue_colors, edgecolor="#1A365D", alpha=0.9)
-    ax_avg.axvline(WIP_ALERT_THRESHOLD, color="#E53E3E", linestyle="--", linewidth=1.5, label=f"警戒線 ({WIP_ALERT_THRESHOLD} Lots)")
+    ax_avg.barh(y_a, max_queue_vals, height=0.65, color=queue_colors, edgecolor="#1A365D", alpha=0.9)
+    ax_avg.axvline(WIP_ALERT_THRESHOLD, color="#E53E3E", linestyle="--", linewidth=1.6, label=f"警戒線 ({WIP_ALERT_THRESHOLD} Lots)")
     ax_avg.set_yticks(y_a)
-    ax_avg.set_yticklabels([f"Top {i+1}: {n}" for i, n in enumerate(sub_q_peak["station_name"])], fontsize=9, fontweight="bold")
+    ax_avg.set_yticklabels([f"Top {i+1:02d}: {n}" for i, n in enumerate(sub_q_peak["station_name"])], fontsize=9.0, fontweight="bold")
     ax_avg.invert_yaxis()
     max_q_val = float(np.max(max_queue_vals)) if len(max_queue_vals) > 0 else 10.0
-    x_limit_avg = max(X_AXIS_MAX * 1.35, WIP_ALERT_THRESHOLD * 1.45, max_q_val * 1.65 + 4.0)
+    x_limit_avg = max(X_AXIS_MAX * 1.25, WIP_ALERT_THRESHOLD * 1.35, max_q_val * 1.45 + 4.0)
     ax_avg.set_xlim(0, x_limit_avg)
-    ax_avg.set_xlabel("等待中 LOT 數最高峰 (Peak Queue Lots)", fontsize=9.5, fontweight="bold")
-    ax_avg.set_title(f"【等待中 LOT 數最高峰 (Peak Queue)】Top {display_n} 站點名單", fontsize=11.5, fontweight="bold", color="#2C5282", pad=10)
+    ax_avg.set_xlabel("等待中 LOT 數最高峰 (Peak Queue Lots)", fontsize=10.5, fontweight="bold")
+    ax_avg.set_title(
+        f"【等待中 LOT 數最高峰 (Peak Queue)】全線各站點排行總覽 (共 {num_all_stations} 站)",
+        fontsize=12.5,
+        fontweight="bold",
+        color="#2C5282",
+        pad=10,
+    )
     ax_avg.grid(axis="x", linestyle=":", alpha=0.6)
-    for i, (q_val, avg_q, q_time) in enumerate(zip(max_queue_vals, sub_q_peak["avg_queue"], sub_q_peak["peak_queue_time"])):
+    for i, (q_val, avg_q, q_time, max_w, cap_v, d_max) in enumerate(
+        zip(
+            max_queue_vals,
+            sub_q_peak["avg_queue"],
+            sub_q_peak["peak_queue_time"],
+            sub_q_peak["max_wip"],
+            sub_q_peak["capacity"],
+            sub_q_peak["daily_max_lots"],
+        )
+    ):
         ax_avg.text(
-            q_val + x_limit_avg * 0.015,
+            q_val + x_limit_avg * 0.012,
             i,
-            f"排隊峰值: {int(q_val)} Lots (平均: {avg_q:.2f} | {format_sim_time(q_time)})",
+            f"排隊峰值: {int(q_val)} Lots (平均排隊: {avg_q:.2f} | 總WIP峰值: {int(max_w)} | 機台: {int(cap_v)}台 [日產能:{d_max:.1f}] | {format_sim_time(q_time)})",
             va="center",
             ha="left",
             fontsize=8.5,
@@ -1208,149 +1151,22 @@ def generate_summary_and_station_charts(
             color="#1A202C",
             clip_on=True,
         )
-    ax_avg.legend(loc="lower right", fontsize=8.5, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
+    ax_avg.legend(loc="lower right", fontsize=9.5, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
 
     summary_path = os.path.join(run_output_dir, "00_Summary_Dashboard.png")
     fig_sum.savefig(summary_path, dpi=130, bbox_inches="tight", pad_inches=0.25)
     saved_files.append(summary_path)
 
-    # --------------------------------------------------------------------------
-    # 圖表 B：Top N 瓶頸站點個別折線分析圖 (一個站點一張圖)
-    # --------------------------------------------------------------------------
-    # 針對等待中 LOT 數最高峰 (或 WIP 最高峰) Top N 站點生成個別分析圖
-    # Y 軸以「等待中的 LOT 數 (Queue)」為核心指標
-    max_popup_figs = 10  # 避免使用者設 Top 30 時一次彈出 30 個視窗卡住系統
-
-    for idx in range(display_n):
-        row = ranked_queue_peak_df.iloc[idx]
-        st_name = row["station_name"]
-        q_col = f"{st_name}__queue"
-
-        st_wips = history_df[st_name].values.astype(float)
-        st_queues = history_df[q_col].values.astype(float)
-        max_q = int(row["max_queue"])
-        avg_q = float(row["avg_queue"])
-        max_w = int(row["max_wip"])
-        avg_w = float(row["avg_wip"])
-        peak_q_t = float(row["peak_queue_time"])
-
-        fig_st, ax_st = plt.subplots(figsize=(11.8, 6.4), dpi=100)
-        fig_st.patch.set_facecolor("#F8F9FA")
-        ax_st.set_facecolor("#FFFFFF")
-
-        # 繪製等待中 Queue LOT 數折線（實線）與站點總 WIP 折線（虛線對照）
-        ax_st.plot(
-            times,
-            st_queues,
-            color="#DD6B20",
-            linewidth=2.4,
-            label=f"等待中 Queue LOT 數 [最高排隊: {max_q}, 平均排隊: {avg_q:.2f} Lots]",
-        )
-        ax_st.plot(
-            times,
-            st_wips,
-            color="#2B6CB0",
-            linewidth=1.5,
-            linestyle="--",
-            alpha=0.75,
-            label=f"站點總 WIP (製程+等待) [最高: {max_w}, 平均: {avg_w:.2f} Lots]",
-        )
-
-        # 在警戒數 (WIP_ALERT_THRESHOLD) 的地方畫一條醒目的紅色虛線
-        ax_st.axhline(
-            y=WIP_ALERT_THRESHOLD,
-            color="#E53E3E",
-            linestyle="--",
-            linewidth=2.0,
-            label=f"警戒等待 LOT 數紅色虛線 ({WIP_ALERT_THRESHOLD} Lots)",
-        )
-
-        # 若等待數量超過警戒線的區段，填上淡紅色警示區域
-        ax_st.fill_between(
-            times,
-            WIP_ALERT_THRESHOLD,
-            st_queues,
-            where=(st_queues >= WIP_ALERT_THRESHOLD),
-            color="#FEB2B2",
-            alpha=0.45,
-            interpolate=True,
-            label="超載警戒區 (等待中 >= 警戒線)",
-        )
-        ax_st.fill_between(times, 0, st_queues, color="#FEEBC8", alpha=0.35)
-
-        # 標註等待中 LOT 數最高峰點位 (若靠近左右邊界則自動內縮文字框對齊方向，防止超出圖表外)
-        max_sim_t = float(np.max(times)) if len(times) > 0 else 1440.0
-        if peak_q_t > max_sim_t * 0.85:
-            annot_ha = "right"
-            text_x = max(0.0, peak_q_t - max_sim_t * 0.02)
-        elif peak_q_t < max_sim_t * 0.15:
-            annot_ha = "left"
-            text_x = min(max_sim_t, peak_q_t + max_sim_t * 0.02)
-        else:
-            annot_ha = "center"
-            text_x = peak_q_t
-
-        ax_st.scatter([peak_q_t], [max_q], color="#E53E3E", s=70, zorder=5)
-        ax_st.annotate(
-            f"最高排隊: {max_q} Lots\n({format_sim_time(peak_q_t)})",
-            xy=(peak_q_t, max_q),
-            xytext=(text_x, max_q + max(1.8, max_q * 0.09)),
-            ha=annot_ha,
-            fontsize=9.5,
-            fontweight="bold",
-            color="#9B2C2C",
-            arrowprops=dict(arrowstyle="->", color="#E53E3E", lw=1.2),
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFF5F5", edgecolor="#FEB2B2"),
-        )
-
-        y_upper = max(X_AXIS_MAX, WIP_ALERT_THRESHOLD + 6, max_q + 6)
-        ax_st.set_ylim(0, y_upper)
-        ax_st.set_xlim(0, max_sim_t)
-        ax_st.set_xticks(tick_vals_full)
-        ax_st.set_xticklabels(tick_labels_full, fontsize=9)
-
-        ax_st.set_xlabel("模擬時間 (Time)", fontsize=11, fontweight="bold", color="#1A202C", labelpad=8)
-        ax_st.set_ylabel("等待中 LOT 數量 (Queue Lots)", fontsize=11, fontweight="bold", color="#1A202C", labelpad=8)
-        ax_st.set_title(
-            f"【{gen_label}｜Top {idx+1} 瓶頸站點等待中 Queue 趨勢分析圖】{st_name}\n"
-            f"(機台數: {int(row['capacity'])} 台 | 混線加權 C/T: {row['ct']:.1f}m | 每日最大產能: {row['daily_max_lots']:.1f} Lots/天 | "
-            f"最高排隊: {max_q} / 平均排隊: {avg_q:.2f} / 總WIP峰值: {max_w})",
-            fontsize=12,
-            fontweight="bold",
-            color="#1A202C",
-            pad=12,
-        )
-
-        ax_st.grid(True, linestyle=":", alpha=0.65, color="#A0AEC0")
-        ax_st.spines["top"].set_visible(False)
-        ax_st.spines["right"].set_visible(False)
-        ax_st.legend(loc="upper left", frameon=True, facecolor="#FFFFFF", edgecolor="#CBD5E0", fontsize=9.5)
-
-        safe_name = (
-            st_name.replace("/", "_")
-            .replace("\\", "_")
-            .replace(" ", "_")
-            .replace(":", "")
-            .replace(".", "")
-        )
-        chart_path = os.path.join(run_output_dir, f"{idx+1:02d}_Top{idx+1}_{safe_name}.png")
-        fig_st.savefig(chart_path, dpi=130, bbox_inches="tight", pad_inches=0.2)
-        saved_files.append(chart_path)
-
-        # 若超過視窗彈出上限則關閉 Figure，僅保留檔案與前 10 張視窗
-        if not show_windows or idx >= max_popup_figs:
-            plt.close(fig_st)
-
     if not show_windows:
         plt.close(fig_sum)
 
-    print(f"📊 [圖表產生完成] 已自動生成 1 張總結圖與 {display_n} 張單站折線分析圖，並儲存至 '{run_output_dir}/' 資料夾：")
+    print(f"📊 [圖表產生完成] 已自動生成全站點總結報告圖，並儲存至 '{run_output_dir}/' 資料夾：")
     for fpath in saved_files:
         print(f"   • {fpath}")
     print()
 
     if show_windows:
-        print("[視覺化啟動] 正在開啟【總結圖】與【Top N 瓶頸站點分析折線圖】視窗...")
+        print("[視覺化啟動] 正在開啟【全站點模擬總結圖】視窗...")
         plt.show()
 
     return saved_files
@@ -1466,7 +1282,7 @@ def create_and_show_animation(
     box_display_n = min(display_n, 10)
     top_lines = [
         f"【全線平均產線總 WIP: {avg_line_wip:.1f} Lots = 站點 WIP {avg_station_wip:.1f} (製程:{avg_in_service:.1f}+等待:{avg_queue:.1f}) + 人員搬送 {avg_transfer:.1f} Lots】",
-        f"【全線 Top {display_n} 瓶頸站點 (關閉此動畫視窗後將自動顯示總結圖與單站分析折線圖)】",
+        f"【全線 Top {display_n} 瓶頸站點 (關閉此動畫視窗後將自動顯示總結圖)】",
     ]
     for idx in range(box_display_n):
         r = ranked_df.iloc[idx]
@@ -1553,7 +1369,7 @@ def create_and_show_animation(
     )
     fig._animation_ref = ani
 
-    print("[動態模擬啟動] 正在開啟 Matplotlib 動態長條圖視窗 (關閉此視窗後，將自動顯示總結圖與各站折線分析圖)...")
+    print("[動態模擬啟動] 正在開啟 Matplotlib 動態長條圖視窗 (關閉此視窗後，將自動顯示總結圖)...")
     plt.show()
     return ani
 
@@ -1695,7 +1511,7 @@ def get_simulation_parameters() -> Tuple[int, str, float, float, float, float, f
         if mode_raw is None:
             default_mode_label = "1: 動態模擬" if DEFAULT_SIM_MODE == "dynamic" else "2: 靜態模擬"
             inp = input(
-                f"  0b. 請選擇模擬模式 (1: 動態模擬[動畫+總結+分析圖], 2: 靜態模擬[直接出總結+分析圖]) [預設 {default_mode_label}]: "
+                f"  0b. 請選擇模擬模式 (1: 動態模擬[動畫+總結圖], 2: 靜態模擬[直接出總結圖]) [預設 {default_mode_label}]: "
             ).strip()
             mode_raw = inp if inp != "" else DEFAULT_SIM_MODE
 
@@ -1739,13 +1555,6 @@ def get_simulation_parameters() -> Tuple[int, str, float, float, float, float, f
                 transfer_min = float(inp) if inp != "" else float(DEFAULT_TRANSFER_MIN)
             except Exception:
                 transfer_min = float(DEFAULT_TRANSFER_MIN)
-
-        if top_n is None:
-            try:
-                inp = input(f"  6. 請輸入要顯示的 Top N 瓶頸站點數量 (如 3, 5, 10) [預設 {DEFAULT_TOP_N}]: ").strip()
-                top_n = int(inp) if inp != "" else int(DEFAULT_TOP_N)
-            except Exception:
-                top_n = int(DEFAULT_TOP_N)
 
     line_gen = parse_line_gen(line_gen_raw)
     sim_mode = parse_sim_mode(mode_raw)
