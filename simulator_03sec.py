@@ -1048,11 +1048,11 @@ def generate_summary_and_station_charts(
     # --------------------------------------------------------------------------
     # 圖表 1：所有站點的等待中 LOT 數最高峰排行圖 (由高到低排列)
     # --------------------------------------------------------------------------
-    fig_q_height = max(9.5, 2.2 + 0.36 * num_all_stations)
-    fig_queue, ax_avg = plt.subplots(figsize=(16.5, fig_q_height), dpi=100)
+    fig_q_height = max(10.5, 2.4 + 0.42 * num_all_stations)
+    fig_queue, ax_avg = plt.subplots(figsize=(17.0, fig_q_height), dpi=100)
     fig_queue.patch.set_facecolor("#F8F9FA")
     ax_avg.set_facecolor("#FFFFFF")
-    fig_queue.subplots_adjust(left=0.26, right=0.96, top=0.90, bottom=0.07)
+    fig_queue.subplots_adjust(left=0.28, right=0.96, top=0.90, bottom=0.07)
 
     fig_queue.suptitle(
         header_info,
@@ -1069,7 +1069,7 @@ def generate_summary_and_station_charts(
     ax_avg.barh(y_a, max_queue_vals, height=0.65, color=queue_colors, edgecolor="#1A365D", alpha=0.9)
     ax_avg.axvline(WIP_ALERT_THRESHOLD, color="#E53E3E", linestyle="--", linewidth=1.6, label=f"警戒線 ({WIP_ALERT_THRESHOLD} Lots)")
     ax_avg.set_yticks(y_a)
-    ax_avg.set_yticklabels([f"Top {i+1:02d}: {n}" for i, n in enumerate(sub_q_peak["station_name"])], fontsize=9.0, fontweight="bold")
+    ax_avg.set_yticklabels(list(sub_q_peak["station_name"]), fontsize=11.5, fontweight="bold", color="#1A202C")
     ax_avg.invert_yaxis()
     max_q_val = float(np.max(max_queue_vals)) if len(max_queue_vals) > 0 else 10.0
     x_limit_avg = max(X_AXIS_MAX * 1.25, WIP_ALERT_THRESHOLD * 1.35, max_q_val * 1.45 + 4.0)
