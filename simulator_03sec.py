@@ -1030,18 +1030,19 @@ def generate_summary_and_station_charts(
     # --------------------------------------------------------------------------
     # 圖表 1：所有站點的等待中 LOT 數最高峰排行圖 (由高到低排列)
     # --------------------------------------------------------------------------
-    fig_q_height = max(10.5, 2.6 + 0.52 * num_all_stations)
-    fig_queue, ax_avg = plt.subplots(figsize=(19.5, fig_q_height), dpi=100)
+    fig_q_height = max(7.6, 1.8 + 0.44 * num_all_stations)
+    left_margin = 0.21 if int(line_gen) == 2 else 0.28
+    fig_queue, ax_avg = plt.subplots(figsize=(14.5, fig_q_height), dpi=100)
     fig_queue.patch.set_facecolor("#F8F9FA")
     ax_avg.set_facecolor("#FFFFFF")
-    fig_queue.subplots_adjust(left=0.28, right=0.96, top=0.90, bottom=0.07)
+    fig_queue.subplots_adjust(left=left_margin, right=0.97, top=0.88, bottom=0.08)
 
     fig_queue.suptitle(
         header_info,
-        fontsize=15.5,
+        fontsize=14.5,
         fontweight="bold",
         color="#1A202C",
-        y=0.965,
+        y=0.96,
     )
 
     y_a = np.arange(num_all_stations)
@@ -1059,10 +1060,10 @@ def generate_summary_and_station_charts(
     ax_avg.set_xlabel("等待中 LOT 數最高峰 (Peak Queue Lots)", fontsize=12.0, fontweight="bold")
     ax_avg.set_title(
         f"【等待中 LOT 數最高峰 (Peak Queue)】全線各站點排行總覽 (由高到低排列，共 {num_all_stations} 站)",
-        fontsize=14.0,
+        fontsize=13.5,
         fontweight="bold",
         color="#2C5282",
-        pad=14,
+        pad=12,
     )
     ax_avg.grid(axis="x", linestyle=":", alpha=0.6)
     for i, (q_val, avg_q, q_time, max_w, cap_v, d_max) in enumerate(
@@ -1081,7 +1082,7 @@ def generate_summary_and_station_charts(
             f"排隊峰值: {int(q_val)} Lots (平均排隊: {avg_q:.2f} | 總WIP峰值: {int(max_w)} | 機台: {int(cap_v)}台 [日產能:{d_max:.1f}] | {format_sim_time(q_time)})",
             va="center",
             ha="left",
-            fontsize=11.5,
+            fontsize=11.0,
             fontweight="bold",
             color="#1A202C",
             clip_on=True,
@@ -1089,7 +1090,7 @@ def generate_summary_and_station_charts(
     ax_avg.legend(loc="lower right", fontsize=11.0, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
 
     queue_chart_path = os.path.join(run_output_dir, "01_Peak_Queue_All_Stations.png")
-    fig_queue.savefig(queue_chart_path, dpi=130, bbox_inches="tight", pad_inches=0.25)
+    fig_queue.savefig(queue_chart_path, dpi=130)
     saved_files.append(queue_chart_path)
 
     # --------------------------------------------------------------------------
