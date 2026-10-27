@@ -79,12 +79,13 @@ def load_or_create_config(cfg_path: str) -> configparser.ConfigParser:
         "daily_lots": "29",
         "mix_ratio": "7:3",
         "work_hours": "20.0",
-        "run_pct": "83.0",
+        "run_pct": "80.0",
         "transfer_min": "8.0",
         "top_n": "3",
         "sim_duration": "10080",
         "warmup_duration": "10080",
         "alert_threshold": "20",
+        "show_inspection": "false",
     }
     try:
         with open(cfg_path, "w", encoding="utf-8") as f:
@@ -109,6 +110,7 @@ DEFAULT_WORK_HOURS = float(_sim_sec.get("work_hours", 20.0))
 DEFAULT_RUN_PCT = float(_sim_sec.get("run_pct", 83.0))
 DEFAULT_TRANSFER_MIN = float(_sim_sec.get("transfer_min", 8.0))
 DEFAULT_TOP_N = int(_sim_sec.get("top_n", 3))
+DEFAULT_SHOW_INSPECTION = _sim_sec.get("show_inspection", "false").strip().lower() in ("true", "1", "yes", "y", "是")
 
 SIM_DURATION = float(_sim_sec.get("sim_duration", 10080.0))
 WARMUP_DURATION = float(_sim_sec.get("warmup_duration", 10080.0))
@@ -282,60 +284,27 @@ def parse_product_routing_sheet(xl: pd.ExcelFile, sheet_name: str, product_code:
 def resolve_station_group_gen2(proc_code: str, proc_name: str, line_group: str) -> str:
     """
     將二代線工藝流程中的工序對應至真實的物理產線站點 (Station Key)。
-    二代線已將設備整合成線，回流共用同一套線體/設備的製程歸戶至同一站點，
-    並純粹以製程名稱顯示（不含設備編號或廠商別名）。
+    二代線直接抓取 Excel E 欄的「站點(線)」(line_group) 作為站點名稱。
     """
-    if proc_code.startswith("UPDB"):
-        return "D/B-IC D/B"
-    elif proc_code.startswith("UPBO") or proc_code.startswith("UPRO"):
-        return "粗化"
-    elif proc_code.startswith("UPLM"):
-        if "微影" in line_group or "乾膜" in proc_name:
-            return "乾膜壓合"
-        return "ABF film- 膠材對壓 / ABF-film 壓合"
-    elif proc_code.startswith("UPOV"):
-        if "壓膜" in line_group or "Cure" in proc_name or "cure" in proc_name:
-            return "ABF-Half & Full Cure / Pre+Full cure"
-        elif "軟烤" in proc_name or proc_code in ("UPOV021", "UPOV027", "UPOV030"):
-            return "SM軟烤"
-        return "SM硬烤"
-    elif proc_code.startswith("UPLA"):
-        return "A/B面LASER打孔"
-    elif proc_code.startswith("UPDR"):
-        return "去膠渣-CF4 plasma"
-    elif proc_code.startswith("UPCL"):
-        return "酸洗"
-    elif proc_code.startswith("UPET"):
-        if proc_code == "UPET011" or "SM-Cu" in proc_name:
-            return "SM-Cu蝕刻"
-        return "去膜、Cu蝕刻、NiCr蝕刻"
-    elif proc_code.startswith("UPMS"):
-        if proc_code == "UPMS036" or "NiAu" in proc_name:
-            return "NiAu-厚度量測"
-        elif proc_code in ("UPMS011", "UPMS022", "UPMS023", "UPMS030") or "SM-尺寸" in proc_name or "Cu-尺寸" in proc_name:
-            return "SM/Cu-尺寸量測"
-        return "厚度孔徑/RDL/Via-2尺寸與電性量測"
-    elif proc_code.startswith("UPSC"):
-        return "AOI外觀檢查"
-    elif proc_code.startswith("UPSP"):
-        return "RDL0層-著膜"
-    elif proc_code == "UPPLXXX" or "化銅" in proc_name:
-        return "化學鍍銅"
-    elif proc_code.startswith("UPEX"):
-        if "印刷" in line_group or "SM" in proc_name or "Via-2" in proc_name:
-            return "SM曝光"
-        return "乾膜曝光"
-    elif proc_code.startswith("UPDE"):
-        if "印刷" in line_group or "SM" in proc_name or "Via-2" in proc_name:
-            return "綠漆顯影"
-        return "乾膜顯影"
-    elif proc_code.startswith("UPPL"):
-        if "掛鍍金" in line_group or "NiAu" in proc_name or proc_code in ("UPPL014", "UPPL023"):
-            return "雙面電鍍NiAu"
-        return "電鍍Cu (龍門)"
-    elif proc_code.startswith("UPPR"):
-        return "綠漆印刷"
+    if line_group and line_group != "nan":
+        return line_group
     return proc_name
+
+
+def is_inspection_station(station_name: str) -> bool:
+    """
+    判斷站點是否屬於外觀檢 / 量測相關站點 (外觀量測、外觀檢查、厚度量測等)。
+    """
+    inspection_keywords = (
+        "外觀量測",
+        "外觀檢查",
+        "厚度量測",
+        "尺寸量測",
+        "首件量測",
+        "AOI",
+        "QC",
+    )
+    return any(kw in str(station_name) for kw in inspection_keywords)
 
 
 def parse_product_routing_sheet_gen2(xl: pd.ExcelFile, sheet_name: str, product_code: str) -> pd.DataFrame:
@@ -598,8 +567,8 @@ def load_process_data(
         routing_03sec["station_name"] = routing_03sec["station_key"].map(key_to_name)
         routing_01sg["station_name"] = routing_01sg["station_key"].map(key_to_name)
 
-        db_03_ct = float(routing_03sec[routing_03sec["station_key"].str.contains("D/B-IC")]["ct"].sum())
-        db_01_ct = float(routing_01sg[routing_01sg["station_key"].str.contains("D/B-IC")]["ct"].sum())
+        db_03_ct = float(routing_03sec[routing_03sec["station_key"].str.contains("D/B-IC|^DB$", regex=True)]["ct"].sum())
+        db_01_ct = float(routing_01sg[routing_01sg["station_key"].str.contains("D/B-IC|^DB$", regex=True)]["ct"].sum())
 
         print(
             f"✅ [資料載入成功] 已從 '{excel_path}' 載入【{gen_label}】雙產品全線工藝：\n"
@@ -796,7 +765,8 @@ class ProductionLineSimulator:
         """
         啟動模擬並回傳歷史紀錄表。
         """
-        db_row = self.stations_df[self.stations_df["station_key"].str.contains("D/B-IC")].iloc[0]
+        db_matches = self.stations_df[self.stations_df["station_key"].str.contains("D/B-IC|^DB$", regex=True)]
+        db_row = db_matches.iloc[0] if not db_matches.empty else self.stations_df.iloc[0]
         gen_label = "二代線" if self.line_gen == 2 else "一代線"
 
         print("=" * 88)
@@ -872,12 +842,14 @@ def analyze_bottlenecks(
     stations_df: pd.DataFrame,
     history_df: pd.DataFrame,
     top_n: int = DEFAULT_TOP_N,
+    show_inspection: bool = DEFAULT_SHOW_INSPECTION,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     計算全線每一個站點在模擬期間內的：
-    1. 平均 WIP 排名 (ranked_avg_df)
+    1. 等待中 LOT 數最高峰排名 (ranked_queue_peak_df)
     2. WIP 最高峰排名 (ranked_peak_df)
     以及產線總 WIP、站點 WIP、人員搬送 Lot 的【最高 / 最低 / 平均】統計。
+    (註：外觀檢站點在模擬中完整參與計算；若 show_inspection=False，僅在最後總結列表與排行圖隱藏外觀檢站點)
     """
     station_names = stations_df["station_name"].tolist()
     queue_cols = [f"{name}__queue" for name in station_names]
@@ -910,6 +882,9 @@ def analyze_bottlenecks(
     analysis_df["peak_time"] = analysis_df["station_name"].map(peak_time_map)
     analysis_df["peak_queue_time"] = analysis_df["station_name"].map(peak_queue_time_map)
 
+    if not show_inspection:
+        analysis_df = analysis_df[~analysis_df["station_name"].apply(is_inspection_station)].copy()
+
     # 1. 依「等待中 LOT 數最高峰 (max_queue)」由高至低排序 (瓶頸阻塞峰值名單)
     ranked_queue_peak_df = analysis_df.sort_values(
         by=["max_queue", "avg_queue", "max_wip"], ascending=[False, False, False]
@@ -920,7 +895,7 @@ def analyze_bottlenecks(
         by=["max_wip", "avg_wip", "effective_ct"], ascending=[False, False, False]
     ).reset_index(drop=True)
 
-    # 印出全線 WIP 與人員搬送 Lot 的【最高 / 最低 / 平均】總結統計
+    # 印出全線 WIP 與人員搬送 Lot 的【最高 / 最低 / 平均】總結統計 (含全線所有站點真實計算結果)
     line_max = int(history_df["total_line_wip"].max())
     line_min = int(history_df["total_line_wip"].min())
     line_avg = float(history_df["total_line_wip"].mean())
@@ -940,7 +915,8 @@ def analyze_bottlenecks(
     print("=" * 80 + "\n")
 
     display_n = len(ranked_queue_peak_df)
-    print(f"=== 全線【等待中 LOT 數最高峰 (Peak Queue)】全站點排行名單 (共 {display_n} 站) ===")
+    insp_note = " (已含外觀檢站點)" if show_inspection else " (已隱藏外觀檢站點，但模擬中有列入計算)"
+    print(f"=== 全線【等待中 LOT 數最高峰 (Peak Queue)】站點排行名單 (共 {display_n} 站){insp_note} ===")
     for idx in range(display_n):
         row = ranked_queue_peak_df.iloc[idx]
         peak_q_t_str = format_sim_time(row["peak_queue_time"])
@@ -1015,6 +991,7 @@ def generate_summary_and_station_charts(
     top_n: int = DEFAULT_TOP_N,
     show_windows: bool = True,
     line_gen: int = DEFAULT_LINE_GEN,
+    show_inspection: bool = DEFAULT_SHOW_INSPECTION,
 ) -> List[str]:
     """
     產生並儲存兩張獨立的模擬總結圖：
@@ -1034,9 +1011,14 @@ def generate_summary_and_station_charts(
         f"每日生產: 60×{work_hours:.0f}h×{run_pct:.0f}% = {daily_equip_mins:.0f}m | 跨站搬送: {transfer_min:.1f}m"
     )
 
+    # 若 show_inspection 為 False，從總結排行圖中隱藏外觀檢相關站點 (外觀量測、外觀檢查、厚度量測)
+    filtered_q_df = ranked_queue_peak_df.copy()
+    if not show_inspection:
+        filtered_q_df = filtered_q_df[~filtered_q_df["station_name"].apply(is_inspection_station)].copy()
+
     # 確保依據「等待中 LOT 數最高峰 (max_queue)」由高到低排列
     sub_q_peak = (
-        ranked_queue_peak_df.sort_values(
+        filtered_q_df.sort_values(
             by=["max_queue", "avg_queue", "max_wip", "avg_wip"],
             ascending=[False, False, False, False],
         )
@@ -1445,17 +1427,29 @@ def parse_line_gen(gen_str: Optional[str]) -> int:
     return 1
 
 
-def get_simulation_parameters() -> Tuple[int, str, float, float, float, float, float, float, int]:
+def parse_show_inspection(val_str: Optional[str]) -> bool:
+    """解析是否顯示外觀檢站點開關 (預設 False)。"""
+    if val_str is None:
+        return DEFAULT_SHOW_INSPECTION
+    s = str(val_str).strip().lower()
+    if s in ("1", "true", "yes", "y", "是", "顯示"):
+        return True
+    if s in ("0", "false", "no", "n", "否", "不顯示"):
+        return False
+    return DEFAULT_SHOW_INSPECTION
+
+
+def get_simulation_parameters() -> Tuple[int, str, float, float, float, float, float, float, int, bool]:
     """
-    開放讓使用者透過命令列參數或互動式輸入設定八大核心參數：
+    開放讓使用者透過命令列參數或互動式輸入設定核心參數：
     - 產線世代開關 (--line-gen，1: 一代線[SourceData.xlsx] 或 2: 二代線[SourceData2.xlsx]，預設 1)
     0. 模擬模式開關 (--mode，'dynamic' 動態模擬 或 'static' 靜態模擬，預設 static)
     1. 每日投入 Lot 數量 (--lots，預設 29，建議 10~35)
     2. 03SEC 與 01SG 混合比例 (--mix，預設 7:3)
     3. 每天生產時間 (小時) (--work-hours，預設 20 小時)
-    4. 機台 RUN% 稼動率 (--run-pct，預設 83%)
+    4. 機台 RUN% 稼動率 (--run-pct，預設 80%)
     5. 站與站之間人員搬送時間 (分鐘) (--transfer-min，預設 8.0 分鐘，0 代表不計)
-    6. 顯示 Top N 瓶頸站點數量 (--top-n，預設 3)
+    6. 是否顯示外觀檢站點 (--show-inspection，預設 否)
     """
     parser = argparse.ArgumentParser(description="03SEC & 01SG 全線多站點動態/靜態混線模擬器 (支援一代線與二代線)")
     parser.add_argument(
@@ -1506,6 +1500,12 @@ def get_simulation_parameters() -> Tuple[int, str, float, float, float, float, f
         default=None,
         help=f"設定要顯示的 Top N 瓶頸站點數量 (預設: {DEFAULT_TOP_N})",
     )
+    parser.add_argument(
+        "--show-inspection",
+        type=str,
+        default=None,
+        help=f"設定總結表是否顯示外觀檢站點 (y/n，預設: {'y' if DEFAULT_SHOW_INSPECTION else 'n'})",
+    )
     args, _ = parser.parse_known_args()
 
     line_gen_raw = args.line_gen
@@ -1516,6 +1516,7 @@ def get_simulation_parameters() -> Tuple[int, str, float, float, float, float, f
     run_pct = args.run_pct
     transfer_min = args.transfer_min
     top_n = args.top_n
+    show_insp_raw = args.show_inspection
 
     is_interactive = (os.environ.get("HEADLESS_TEST", "0") != "1") and sys.stdin.isatty()
 
@@ -1579,8 +1580,16 @@ def get_simulation_parameters() -> Tuple[int, str, float, float, float, float, f
             except Exception:
                 transfer_min = float(DEFAULT_TRANSFER_MIN)
 
+        if show_insp_raw is None:
+            default_insp_label = "y (是)" if DEFAULT_SHOW_INSPECTION else "n (否)"
+            inp = input(
+                f"  6. 是否在總結表顯示外觀檢站點 (外觀量測/外觀檢查/厚度量測)？ (y: 顯示, n: 不顯示但仍列入模擬計算) [預設 {default_insp_label}]: "
+            ).strip()
+            show_insp_raw = inp if inp != "" else ("y" if DEFAULT_SHOW_INSPECTION else "n")
+
     line_gen = parse_line_gen(line_gen_raw)
     sim_mode = parse_sim_mode(mode_raw)
+    show_inspection = parse_show_inspection(show_insp_raw)
     if daily_lots is None or daily_lots <= 0:
         daily_lots = float(DEFAULT_DAILY_LOTS)
     if mix_str is None or mix_str.strip() == "":
@@ -1595,13 +1604,13 @@ def get_simulation_parameters() -> Tuple[int, str, float, float, float, float, f
         top_n = int(DEFAULT_TOP_N)
 
     ratio_03sec, ratio_01sg = parse_mix_ratio(mix_str)
-    return line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n
+    return line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n, show_inspection
 
 
 def reload_config_globals():
     """重新讀取 config.ini 並刷新全域預設值，支援即時修改即時套用。"""
     global DEFAULT_LINE_GEN, DEFAULT_SIM_MODE, DEFAULT_DAILY_LOTS, DEFAULT_MIX_RATIO_STR, DEFAULT_WORK_HOURS
-    global DEFAULT_RUN_PCT, DEFAULT_TRANSFER_MIN, DEFAULT_TOP_N, SIM_DURATION, WARMUP_DURATION
+    global DEFAULT_RUN_PCT, DEFAULT_TRANSFER_MIN, DEFAULT_TOP_N, DEFAULT_SHOW_INSPECTION, SIM_DURATION, WARMUP_DURATION
     global MONITOR_INTERVAL, WIP_ALERT_THRESHOLD
 
     cfg = load_or_create_config(CONFIG_PATH)
@@ -1612,9 +1621,10 @@ def reload_config_globals():
     DEFAULT_DAILY_LOTS = float(sim_sec.get("daily_lots", 29.0))
     DEFAULT_MIX_RATIO_STR = sim_sec.get("mix_ratio", "7:3").strip()
     DEFAULT_WORK_HOURS = float(sim_sec.get("work_hours", 20.0))
-    DEFAULT_RUN_PCT = float(sim_sec.get("run_pct", 83.0))
+    DEFAULT_RUN_PCT = float(sim_sec.get("run_pct", 80.0))
     DEFAULT_TRANSFER_MIN = float(sim_sec.get("transfer_min", 8.0))
     DEFAULT_TOP_N = int(sim_sec.get("top_n", 3))
+    DEFAULT_SHOW_INSPECTION = sim_sec.get("show_inspection", "false").strip().lower() in ("true", "1", "yes", "y", "是")
 
     SIM_DURATION = float(sim_sec.get("sim_duration", 10080.0))
     WARMUP_DURATION = float(sim_sec.get("warmup_duration", 10080.0))
@@ -1654,17 +1664,17 @@ def main():
                 use_same = True
 
             if use_same:
-                line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = last_params
+                line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n, show_inspection = last_params
             else:
-                line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
+                line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n, show_inspection = (
                     get_simulation_parameters()
                 )
         else:
-            line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n = (
+            line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n, show_inspection = (
                 get_simulation_parameters()
             )
 
-        last_params = (line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n)
+        last_params = (line_gen, sim_mode, daily_lots, ratio_03sec, ratio_01sg, work_hours, run_pct, transfer_min, top_n, show_inspection)
         daily_equip_mins = 60.0 * work_hours * (run_pct / 100.0)
         gen_label = "二代線" if line_gen == 2 else "一代線"
 
@@ -1705,7 +1715,7 @@ def main():
         print(preview_df.to_string(index=False))
         print()
 
-        # Step 3: 啟動 SimPy 雙產品混線模擬器
+        # Step 3: 啟動 SimPy 雙產品混線模擬器 (所有站點含外觀檢站點皆完整列入模擬計算)
         simulator = ProductionLineSimulator(
             stations_df=stations_df,
             routings=routings,
@@ -1722,8 +1732,10 @@ def main():
         )
         history_df = simulator.run()
 
-        # Step 4: 自動識別並印出全線 WIP 最高/最低/平均總結、等待中LOT數最高峰 Top N 與站點總WIP最高峰 Top N 名單
-        ranked_queue_peak_df, ranked_peak_df = analyze_bottlenecks(stations_df, history_df, top_n=top_n)
+        # Step 4: 自動識別並印出全線 WIP 最高/最低/平均總結與等待中LOT數最高峰排行 (依 show_inspection 決定是否顯示外觀檢站點)
+        ranked_queue_peak_df, ranked_peak_df = analyze_bottlenecks(
+            stations_df, history_df, top_n=top_n, show_inspection=show_inspection
+        )
 
         # Step 5: 根據「動態模擬 (dynamic)」或「靜態模擬 (static)」開關執行視覺化
         if sim_mode == "dynamic" and not is_headless:
@@ -1743,8 +1755,7 @@ def main():
                 line_gen=line_gen,
             )
 
-        # 5B. 產生「模擬總結圖」與「Top N 瓶頸站點折線分析圖 (一個一張 + 警戒紅虛線)」
-        # (無論動態模擬結束後或靜態模擬，皆會自動生成圖檔並彈出圖表視窗)
+        # 5B. 產生 2 張「模擬總結圖」(依 show_inspection 決定是否在總結排行圖顯示外觀檢站點)
         generate_summary_and_station_charts(
             history_df=history_df,
             ranked_queue_peak_df=ranked_queue_peak_df,
@@ -1758,6 +1769,7 @@ def main():
             top_n=top_n,
             show_windows=(not is_headless),
             line_gen=line_gen,
+            show_inspection=show_inspection,
         )
 
         # 徹底釋放圖表記憶體資源
