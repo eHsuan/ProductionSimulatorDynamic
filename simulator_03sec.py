@@ -1030,15 +1030,15 @@ def generate_summary_and_station_charts(
     # --------------------------------------------------------------------------
     # 圖表 1：所有站點的等待中 LOT 數最高峰排行圖 (由高到低排列)
     # --------------------------------------------------------------------------
-    fig_q_height = max(10.5, 2.4 + 0.42 * num_all_stations)
-    fig_queue, ax_avg = plt.subplots(figsize=(17.0, fig_q_height), dpi=100)
+    fig_q_height = max(10.5, 2.6 + 0.52 * num_all_stations)
+    fig_queue, ax_avg = plt.subplots(figsize=(19.5, fig_q_height), dpi=100)
     fig_queue.patch.set_facecolor("#F8F9FA")
     ax_avg.set_facecolor("#FFFFFF")
     fig_queue.subplots_adjust(left=0.28, right=0.96, top=0.90, bottom=0.07)
 
     fig_queue.suptitle(
         header_info,
-        fontsize=14.0,
+        fontsize=15.5,
         fontweight="bold",
         color="#1A202C",
         y=0.965,
@@ -1051,18 +1051,18 @@ def generate_summary_and_station_charts(
     ax_avg.barh(y_a, max_queue_vals, height=0.65, color=queue_colors, edgecolor="#1A365D", alpha=0.9)
     ax_avg.axvline(WIP_ALERT_THRESHOLD, color="#E53E3E", linestyle="--", linewidth=1.6, label=f"警戒線 ({WIP_ALERT_THRESHOLD} Lots)")
     ax_avg.set_yticks(y_a)
-    ax_avg.set_yticklabels(list(sub_q_peak["station_name"]), fontsize=11.5, fontweight="bold", color="#1A202C")
+    ax_avg.set_yticklabels(list(sub_q_peak["station_name"]), fontsize=14.0, fontweight="bold", color="#1A202C")
     ax_avg.invert_yaxis()
     max_q_val = float(np.max(max_queue_vals)) if len(max_queue_vals) > 0 else 10.0
-    x_limit_avg = max(X_AXIS_MAX * 1.25, WIP_ALERT_THRESHOLD * 1.35, max_q_val * 1.45 + 4.0)
+    x_limit_avg = max(X_AXIS_MAX * 1.45, WIP_ALERT_THRESHOLD * 1.55, max_q_val * 1.65 + 6.0)
     ax_avg.set_xlim(0, x_limit_avg)
-    ax_avg.set_xlabel("等待中 LOT 數最高峰 (Peak Queue Lots)", fontsize=10.5, fontweight="bold")
+    ax_avg.set_xlabel("等待中 LOT 數最高峰 (Peak Queue Lots)", fontsize=12.0, fontweight="bold")
     ax_avg.set_title(
         f"【等待中 LOT 數最高峰 (Peak Queue)】全線各站點排行總覽 (由高到低排列，共 {num_all_stations} 站)",
-        fontsize=12.5,
+        fontsize=14.0,
         fontweight="bold",
         color="#2C5282",
-        pad=12,
+        pad=14,
     )
     ax_avg.grid(axis="x", linestyle=":", alpha=0.6)
     for i, (q_val, avg_q, q_time, max_w, cap_v, d_max) in enumerate(
@@ -1081,12 +1081,12 @@ def generate_summary_and_station_charts(
             f"排隊峰值: {int(q_val)} Lots (平均排隊: {avg_q:.2f} | 總WIP峰值: {int(max_w)} | 機台: {int(cap_v)}台 [日產能:{d_max:.1f}] | {format_sim_time(q_time)})",
             va="center",
             ha="left",
-            fontsize=8.5,
+            fontsize=11.5,
             fontweight="bold",
             color="#1A202C",
             clip_on=True,
         )
-    ax_avg.legend(loc="lower right", fontsize=9.5, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
+    ax_avg.legend(loc="lower right", fontsize=11.0, frameon=True, facecolor="#FFFFFF", framealpha=0.9)
 
     queue_chart_path = os.path.join(run_output_dir, "01_Peak_Queue_All_Stations.png")
     fig_queue.savefig(queue_chart_path, dpi=130, bbox_inches="tight", pad_inches=0.25)
