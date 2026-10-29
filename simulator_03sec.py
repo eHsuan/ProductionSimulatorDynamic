@@ -293,9 +293,11 @@ def resolve_station_group_gen2(proc_code: str, proc_name: str, line_group: str) 
 
 def is_inspection_station(station_name: str) -> bool:
     """
-    判斷站點是否屬於外觀檢 / 量測相關站點 (外觀量測、外觀檢查、厚度量測等)。
+    判斷站點是否屬於外觀檢 / 量測相關站點 (外觀、離線量測(Xray)、外觀量測、外觀檢查、厚度量測等)。
     """
     inspection_keywords = (
+        "外觀",
+        "離線量測",
         "外觀量測",
         "外觀檢查",
         "厚度量測",
@@ -313,21 +315,21 @@ def parse_product_routing_sheet_gen2(xl: pd.ExcelFile, sheet_name: str, product_
     - C 欄：製程編號
     - D 欄：製程名稱
     - E 欄：站點(線)
-    - F 欄：Cycle Time (每個機台做一個 LOT 要多少分鐘)
-    - G 欄：機台數 (這個站點共有多少台設備可用)
+    - F 欄：Cycle Time (這條線進去一個 LOT 要多少分鐘才能完成)
+    - G 欄：線數 / 機台數 (這個站點共有多少條線/設備可用)
     """
     raw_df = xl.parse(sheet_name)
     if "製程序號" in raw_df.columns:
         raw_df = raw_df.sort_values(by="製程序號", ascending=True).reset_index(drop=True)
 
-    # 自動匹配 F 欄 (Cycle Time) 與 G 欄 (機台數)
+    # 自動匹配 F 欄 (Cycle Time) 與 G 欄 (線數 / 機台數)
     ct_col = None
     cap_col = None
     for c in raw_df.columns:
         c_str = str(c).strip()
         if "Cycle Time" in c_str or c_str.upper().startswith("CT"):
             ct_col = c
-        elif "機台數" in c_str or "設備數" in c_str:
+        elif "線數" in c_str or "機台數" in c_str or "設備數" in c_str:
             cap_col = c
     if ct_col is None and len(raw_df.columns) >= 6:
         ct_col = raw_df.columns[5]
